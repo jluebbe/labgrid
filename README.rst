@@ -16,7 +16,7 @@ It currently supports:
 - Power/Reset management via plugins for power switches or onewire PIOs
 - Upload of images via imxusbloader/mxusbloader or fastboot
 - Functions to control external services such as emulated USB-Sticks and the
-  `Hawkbit <https://github.com/eclipse/hawkbit>`_ deployment service
+  `hawkBit <https://github.com/eclipse/hawkbit>`_ deployment service
 
 Documentation
 -------------
