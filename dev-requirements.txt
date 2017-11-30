@@ -13,6 +13,6 @@ pytest-runner==3.0
 onewire>=0.2
 pyudev==0.21.0
 yapf==0.20.0
-requests==2.13.0
+requests==2.18.4
 autobahn==0.18.1
 -r doc-requirements.txt
