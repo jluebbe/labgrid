@@ -1,7 +1,7 @@
 PyYAML==3.12
 attrs==17.3.0
 crossbar==17.11.1
-pexpect
+pexpect==4.3.0
 pyserial>=3.3
 pytest
 pytest-cache
