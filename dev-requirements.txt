@@ -4,7 +4,7 @@ crossbar==17.11.1
 pexpect==4.3.0
 pyserial>=3.3
 pytest==3.3.0
-pytest-cache
+pytest-cache==1.0
 pytest-cov
 pytest-isort
 pytest-mock
