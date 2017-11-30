@@ -3,7 +3,7 @@ attrs==17.3.0
 crossbar==17.11.1
 pexpect==4.3.0
 pyserial>=3.3
-pytest
+pytest==3.3.0
 pytest-cache
 pytest-cov
 pytest-isort
