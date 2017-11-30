@@ -1,4 +1,4 @@
-PyYAML
+PyYAML==3.12
 attrs==16.3.0
 crossbar==17.3.1
 pexpect
