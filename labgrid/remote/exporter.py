@@ -26,7 +26,7 @@ except pkg_resources.DistributionNotFound:
 exports = {}
 reexec = False
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class ResourceExport(ResourceEntry):
     """Represents a local resource exported via a specific protocol.
 
@@ -71,26 +71,25 @@ class ResourceExport(ResourceEntry):
         self._stop(self.start_params)
         self.start_params = None
 
-    def need_restart(self):
-        """
-        Check if the previously used start parameters have changed so that a
-        restart is needed.
-        """
-        start_params = self._get_start_params()
-        if self.start_params != start_params:
-            self.logger.info("restart needed (%s -> %s)", self.start_params, start_params)
-            return True
-        return False
-
     def poll(self):
-        dirty = False
         # poll and check for updated params/avail
         self.local.poll()
-        if self.avail != self.local.avail:
-            if self.local.avail:
+
+        if self.local.avail and self.acquired:
+            start_params = self._get_start_params()
+            if self.start_params is None:
                 self.start()
-            else:
+            elif self.start_params != start_params:
+                self.logger.info("restart needed (%s -> %s)", self.start_params, start_params)
                 self.stop()
+                self.start()
+        else:
+            if self.start_params is not None:
+                self.stop()
+
+        # check if resulting information has changed
+        dirty = False
+        if self.avail != self.local.avail:
             self.data['avail'] = self.local.avail
             dirty = True
         params = self._get_params()
@@ -99,15 +98,21 @@ class ResourceExport(ResourceEntry):
         params['extra']['proxy_required'] = self.proxy_required
         params['extra']['proxy'] = self.proxy
         if self.params != params:
-            if self.local.avail and self.need_restart():
-                self.stop()
-                self.start()
             self.data['params'].update(params)  # pylint: disable=unsubscriptable-object
             dirty = True
+
         return dirty
 
+    def acquire(self, *args, **kwargs):
+        super().acquire(*args, **kwargs)
+        self.poll()
 
-@attr.s(cmp=False)
+    def release(self, *args, **kwargs):
+        super().release(*args, **kwargs)
+        self.poll()
+
+
+@attr.s(eq=False)
 class USBSerialPortExport(ResourceExport):
     """ResourceExport for a USB SerialPort"""
 
@@ -161,18 +166,20 @@ class USBSerialPortExport(ResourceExport):
         # stop ser2net
         child = self.child
         self.child = None
+        port = self.port
+        self.port = None
         child.terminate()
         try:
             child.wait(1.0)
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(1.0)
-        self.logger.info("stopped ser2net for %s on port %d", start_params['path'], self.port)
+        self.logger.info("stopped ser2net for %s on port %d", start_params['path'], port)
 
 
 exports["USBSerialPort"] = USBSerialPortExport
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBEthernetExport(ResourceExport):
     """ResourceExport for a USB ethernet interface"""
 
@@ -193,7 +200,7 @@ class USBEthernetExport(ResourceExport):
 
 exports["USBEthernetInterface"] = USBEthernetExport
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBGenericExport(ResourceExport):
     """ResourceExport for USB devices accessed directly from userspace"""
 
@@ -216,7 +223,7 @@ class USBGenericExport(ResourceExport):
             'model_id': self.local.model_id,
         }
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBSigrokExport(USBGenericExport):
     """ResourceExport for USB devices accessed directly from userspace"""
 
@@ -236,7 +243,7 @@ class USBSigrokExport(USBGenericExport):
             'channels': self.local.channels
         }
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBSDMuxExport(USBGenericExport):
     """ResourceExport for USB devices accessed directly from userspace"""
 
@@ -255,7 +262,7 @@ class USBSDMuxExport(USBGenericExport):
             'control_path': self.local.control_path,
         }
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBPowerPortExport(USBGenericExport):
     """ResourceExport for ports on switchable USB hubs"""
 
@@ -274,7 +281,7 @@ class USBPowerPortExport(USBGenericExport):
             'index': self.local.index,
         }
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBDeditecRelaisExport(USBGenericExport):
     """ResourceExport for outputs on deditec relais"""
 
@@ -297,6 +304,7 @@ class USBDeditecRelaisExport(USBGenericExport):
 exports["AndroidFastboot"] = USBGenericExport
 exports["IMXUSBLoader"] = USBGenericExport
 exports["MXSUSBLoader"] = USBGenericExport
+exports["RKUSBLoader"] = USBGenericExport
 exports["AlteraUSBBlaster"] = USBGenericExport
 exports["SigrokUSBDevice"] = USBSigrokExport
 exports["USBSDMuxDevice"] = USBSDMuxExport
@@ -329,6 +337,28 @@ class EthernetPortExport(ResourceExport):
 exports["SNMPEthernetPort"] = EthernetPortExport
 
 
+@attr.s(eq=False)
+class GPIOGenericExport(ResourceExport):
+    """ResourceExport for GPIO lines accessed directly from userspace"""
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        local_cls_name = self.cls
+        self.data['cls'] = "Network{}".format(self.cls)
+        from ..resource import udev
+        local_cls = getattr(udev, local_cls_name)
+        self.local = local_cls(target=None, name=None, **self.local_params)
+
+    def _get_params(self):
+        """Helper function to return parameters"""
+        return {
+            'host': self.host,
+            'index': self.local.index,
+        }
+
+exports["SysfsGPIO"] = GPIOGenericExport
+
+
 class ExporterSession(ApplicationSession):
     def onConnect(self):
         """Set up internal datastructures on successful connection:
@@ -358,16 +388,25 @@ class ExporterSession(ApplicationSession):
         - bail out if we are unsuccessful
         """
         print(details)
+
+        prefix = 'org.labgrid.exporter.{}'.format(self.name)
+        await self.register(self.acquire, '{}.acquire'.format(prefix))
+        await self.register(self.release, '{}.release'.format(prefix))
+        await self.register(self.version, '{}.version'.format(prefix))
+
         try:
             resource_config = ResourceConfig(self.config.extra['resources'])
             for group_name, group in resource_config.data.items():
+                group_name = str(group_name)
                 for resource_name, params in group.items():
+                    resource_name = str(resource_name)
                     if resource_name == 'location':
                         continue
                     if params is None:
                         continue
                     cls = params.pop('cls', resource_name)
 
+                    # this may call back to acquire the resource immediately
                     await self.add_resource(
                         group_name, resource_name, cls, params
                     )
@@ -378,11 +417,6 @@ class ExporterSession(ApplicationSession):
             return
 
         self.poll_task = self.loop.create_task(self.poll())
-
-        prefix = 'org.labgrid.exporter.{}'.format(self.name)
-        await self.register(self.acquire, '{}.acquire'.format(prefix))
-        await self.register(self.release, '{}.release'.format(prefix))
-        await self.register(self.version, '{}.version'.format(prefix))
 
     async def onLeave(self, details):
         """Cleanup after leaving the coordinator connection"""
@@ -401,16 +435,14 @@ class ExporterSession(ApplicationSession):
             await asyncio.sleep(0.5) # give others a chance to clean up
         self.loop.stop()
 
-    async def acquire(self, group_name, resource_name):
-        # TODO: perform local actions when a resource is acquired
-        #resource = self.groups[group_name][resource_name]
-        #resource.acquire()
+    async def acquire(self, group_name, resource_name, place_name):
+        resource = self.groups[group_name][resource_name]
+        resource.acquire(place_name)
         await self.update_resource(group_name, resource_name)
 
     async def release(self, group_name, resource_name):
-        # TODO: perform local actions when a resource is released
-        #resource = self.groups[group_name][resource_name]
-        #resource.release()
+        resource = self.groups[group_name][resource_name]
+        resource.release()
         await self.update_resource(group_name, resource_name)
 
     async def version(self):
@@ -428,18 +460,12 @@ class ExporterSession(ApplicationSession):
                     traceback.print_exc()
                     continue
                 if changed:
-                    # resource has changed
-                    data = resource.asdict()
-                    print(data)
-                    await self.call(
-                        'org.labgrid.coordinator.set_resource', group_name,
-                        resource_name, data
-                    )
+                    await self.update_resource(group_name, resource_name)
 
     async def poll(self):
         while True:
             try:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.25)
                 await self._poll_step()
             except asyncio.CancelledError:
                 break

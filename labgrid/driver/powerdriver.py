@@ -13,11 +13,12 @@ from ..resource.remote import NetworkUSBPowerPort
 from ..resource.udev import USBPowerPort
 from ..step import step
 from ..util.proxy import proxymanager
+from ..util.helper import processwrapper
 from .common import Driver
 from .exception import ExecutionError
 
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class PowerResetMixin(ResetProtocol):
     """
     ResetMixin implements the ResetProtocol for drivers which support the PowerProtocol
@@ -33,7 +34,7 @@ class PowerResetMixin(ResetProtocol):
         self.cycle()
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class ManualPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """ManualPowerDriver - Driver to tell the user to control a target's power"""
 
@@ -61,7 +62,7 @@ class ManualPowerDriver(Driver, PowerResetMixin, PowerProtocol):
 
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class ExternalPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """ExternalPowerDriver - Driver using an external command to control a target's power"""
     cmd_on = attr.ib(validator=attr.validators.instance_of(str))
@@ -76,27 +77,27 @@ class ExternalPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     @step()
     def on(self):
         cmd = shlex.split(self.cmd_on)
-        subprocess.check_call(cmd)
+        processwrapper.check_output(cmd)
 
     @Driver.check_active
     @step()
     def off(self):
         cmd = shlex.split(self.cmd_off)
-        subprocess.check_call(cmd)
+        processwrapper.check_output(cmd)
 
     @Driver.check_active
     @step()
     def cycle(self):
         if self.cmd_cycle is not None:
             cmd = shlex.split(self.cmd_cycle)
-            subprocess.check_call(cmd)
+            processwrapper.check_output(cmd)
         else:
             self.off()
             time.sleep(self.delay)
             self.on()
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class NetworkPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """NetworkPowerDriver - Driver using a networked power switch to control a target's power"""
     bindings = {"port": NetworkPowerPort, }
@@ -144,7 +145,7 @@ class NetworkPowerDriver(Driver, PowerResetMixin, PowerProtocol):
         return self.backend.power_get(self._host, self._port, self.port.index)
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class DigitalOutputPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """
     DigitalOutputPowerDriver uses a DigitalOutput to control the power
@@ -179,7 +180,7 @@ class DigitalOutputPowerDriver(Driver, PowerResetMixin, PowerProtocol):
         return self.output.get()
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class YKUSHPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """YKUSHPowerDriver - Driver using a YEPKIT YKUSH switchable USB hub
         to control a target's power - https://www.yepkit.com/products/ykush"""
@@ -216,7 +217,7 @@ class YKUSHPowerDriver(Driver, PowerResetMixin, PowerProtocol):
         return self.pykush.get_port_state(self.port.index)
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBPowerDriver(Driver, PowerResetMixin, PowerProtocol):
     """USBPowerDriver - Driver using a power switchable USB hub and the uhubctl
     tool (https://github.com/mvp/uhubctl) to control a target's power"""
@@ -239,7 +240,7 @@ class USBPowerDriver(Driver, PowerResetMixin, PowerProtocol):
             "-r", "100", # use 100 retries for now
             "-a", cmd,
         ]
-        subprocess.check_call(cmd)
+        processwrapper.check_output(cmd)
 
     @Driver.check_active
     @step()
@@ -265,7 +266,7 @@ class USBPowerDriver(Driver, PowerResetMixin, PowerProtocol):
             "-l", self.hub.path,
             "-p", str(self.hub.index),
         ]
-        output = subprocess.check_output(cmd)
+        output = processwrapper.check_output(cmd)
         for line in output.splitlines():
             if not line or not line.startswith(b' '):
                 continue
@@ -278,3 +279,52 @@ class USBPowerDriver(Driver, PowerResetMixin, PowerProtocol):
             if b"off" in status:
                 return False
         raise ExecutionError("Did not find port status in uhubctl output ({})".format(repr(output)))
+
+
+@target_factory.reg_driver
+@attr.s(eq=False)
+class PDUDaemonDriver(Driver, PowerResetMixin, PowerProtocol):
+    """PDUDaemonDriver - Driver using a PDU port available via pdudaemon"""
+    bindings = {"port": "PDUDaemonPort", }
+    delay = attr.ib(default=5, validator=attr.validators.instance_of(int))
+
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        self._requests = import_module('requests')
+        self._host = None
+        self._port = None
+
+    def _build_url(self, cmd):
+        res = "http://{}:{}/power/control/{}?hostname={}&port={}".format(
+            self._host, self._port, cmd, self.port.pdu, self.port.index)
+        if cmd == 'reboot':
+            res += "&delay={}".format(self.delay)
+        return res
+
+    def on_activate(self):
+        self._host, self._port = proxymanager.get_host_and_port(self.port, default_port=16421)
+
+    @Driver.check_active
+    @step()
+    def on(self):
+        r = self._requests.get(self._build_url('on'))
+        r.raise_for_status()
+        time.sleep(1)  # give pdudaemon some time to execute the request
+
+    @Driver.check_active
+    @step()
+    def off(self):
+        r = self._requests.get(self._build_url('off'))
+        r.raise_for_status()
+        time.sleep(1)  # give pdudaemon some time to execute the request
+
+    @Driver.check_active
+    @step()
+    def cycle(self):
+        r = self._requests.get(self._build_url('reboot'))
+        r.raise_for_status()
+        time.sleep(self.delay + 1)  # give pdudaemon some time to execute the request
+
+    @Driver.check_active
+    def get(self):
+        return None
