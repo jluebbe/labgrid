@@ -4,6 +4,8 @@ Release 0.3.0 (unreleased)
 New Features in 0.3.0
 ~~~~~~~~~~~~~~~~~~~~~
 
+- The new `FileDigitalOutputDriver` respresents a digital signal with a file.
+- The new `GpioDigitalOutputDriver` controls the state of a GPIO via the sysfs interface.
 - Crossbar and autobahn have been updated to 19.3.3 and 19.3.5 respectively.
 - The InfoDriver was removed. The functions have been integrated into the
   labgridhelper library, please use the library for the old functionality.
@@ -20,6 +22,16 @@ New Features in 0.3.0
   Drivers which run commands via SSH to the exporter still connect directly,
   allowing custom configuration in the user's ``.ssh/config`` as needed.
   Note that not all drivers have been updated to use the ProxyManager yet.
+- Flashrom support added, by hard-wiring e.g. an exporter to the DUT, the ROM
+  on the DUT can be written directly. The flashrom driver implements the
+  bootstrap protocol.
+- AndroidFastbootDriver now supports 'getvar' and 'oem getenv' subcommands.
+- The coordinator now updates the resource acquired state at the exporter.
+  Accordingly, the exporter now starts ser2net only when a resources is
+  aquired. Furthermore, resource conflicts between places are now detected.
+- The binding dictionary can now supports type name strings in addition to the
+  types themselves, avoiding the need to import a specific protocol or driver
+  in some cases.
 
 Breaking changes in 0.3.0
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -31,6 +43,8 @@ Breaking changes in 0.3.0
   ``fs.protected_fifos=1`` for kernels>=4.19.
   This requires user intervention after the upgrade to create the directory and
   setup the cleanup job.
+- ``@attr.s(cmp=False)`` is deprecated and all classes have been moved to
+  ``@attr.s(eq=False)``, this release requires attrs version 19.2.0
 
 Release 0.2.0 (released Jan 4, 2019)
 ------------------------------------

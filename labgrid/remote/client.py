@@ -17,7 +17,7 @@ from pprint import pformat
 import txaio
 from autobahn.asyncio.wamp import ApplicationSession
 
-from .common import ResourceEntry, ResourceMatch, Place, enable_tcp_nodelay
+from .common import *
 from ..environment import Environment
 from ..exceptions import NoDriverFoundError, NoResourceFoundError, InvalidConfigError
 from ..resource.remote import RemotePlaceManager, RemotePlace
@@ -25,6 +25,7 @@ from ..util.dict import diff_dict, flat_dict, filter_dict
 from ..util.yaml import dump
 from .. import Target, target_factory
 from ..util.proxy import proxymanager
+from ..util.helper import processwrapper
 
 txaio.use_asyncio()
 txaio.config.loop = asyncio.get_event_loop()
@@ -128,18 +129,20 @@ class ClientSession(ApplicationSession):
         config['matches'] = [ResourceMatch(**match) \
             for match in config['matches']]
         config = filter_dict(config, Place, warn=True)
-        place = Place(**config)
         if name not in self.places:
+            place = Place(**config)
+            self.places[name] = place
             if self.monitor:
                 print("Place {} created: {}".format(name, place))
         else:
+            place = self.places[name]
+            old = flat_dict(place.asdict())
+            place.update(config)
+            new = flat_dict(place.asdict())
             if self.monitor:
                 print("Place {} changed:".format(name))
-                for k, v_old, v_new in diff_dict(
-                        flat_dict(self.places[name].asdict()),
-                        flat_dict(place.asdict())):
+                for k, v_old, v_new in diff_dict(old, new):
                     print("  {}: {} -> {}".format(k, v_old, v_new))
-        self.places[name] = place
 
     async def do_monitor(self):
         self.monitor = True
@@ -271,6 +274,23 @@ class ClientSession(ApplicationSession):
         the current user name.
         """
         result = set()
+
+        # reservation token lookup
+        token = None
+        if pattern.startswith('+'):
+            token = pattern[1:]
+            if not token:
+                token = os.environ.get('LG_TOKEN', None)
+            if not token:
+                return []
+            for name, place in self.places.items():
+                if place.reservation == token:
+                    result.add(name)
+            if not result:
+                raise UserError("reservation token {} matches nothing".format(token))
+            return list(result)
+
+        # name and alias lookup
         for name, place in self.places.items():
             if pattern in name:
                 result.add(name)
@@ -284,6 +304,18 @@ class ClientSession(ApplicationSession):
                 if pattern in alias:
                     result.add(name)
         return list(result)
+
+    def _check_allowed(self, place):
+        if not place.acquired:
+            raise UserError("place {} is not acquired".format(place.name))
+        if gethostname()+'/'+getuser() not in place.allowed:
+            host, user = place.acquired.split('/')
+            if user != getuser():
+                raise UserError("place {} is not acquired by your user, acquired by {}".format(
+                    place.name, user))
+            if host != gethostname():
+                raise UserError("place {} is not acquired on this computer, acquired on {}".format(
+                    place.name, host))
 
     def get_place(self, place=None):
         pattern = place or self.args.place
@@ -310,16 +342,7 @@ class ClientSession(ApplicationSession):
 
     def get_acquired_place(self, place=None):
         place = self.get_place(place)
-        if not place.acquired:
-            raise UserError("place {} is not acquired".format(place.name))
-        if gethostname()+'/'+getuser() not in place.allowed:
-            host, user = place.acquired.split('/')
-            if user != getuser():
-                raise UserError("place {} is not acquired by your user, acquired by {}".format(
-                    place.name, user))
-            if host != gethostname():
-                raise UserError("place {} is not acquired on this computer, acquired on {}".format(
-                    place.name, host))
+        self._check_allowed(place)
         return place
 
     async def print_place(self):
@@ -368,7 +391,14 @@ class ClientSession(ApplicationSession):
 
     async def del_place(self):
         """Delete a place from the coordinator"""
-        name = self.args.place
+        pattern = self.args.place
+        if pattern not in self.places:
+            raise UserError("deletes require an exact place name")
+        place = self.places[pattern]
+        if place.acquired:
+            raise UserError("place {} is not idle (acquired by {})".format(
+                place.name, place.acquired))
+        name = place.name
         if not name:
             raise UserError("missing place name. Set with -p <place> or via env var $PLACE")
         if name not in self.places:
@@ -420,6 +450,29 @@ class ClientSession(ApplicationSession):
         if not res:
             raise ServerError(
                 "failed to set comment {} for place {}".format(comment, place.name)
+            )
+        return res
+
+    async def set_tags(self):
+        """Set the tags on a place"""
+        place = self.get_place()
+        tags = {}
+        for pair in self.args.tags:
+            try:
+                k, v = pair.split('=')
+            except ValueError:
+                raise UserError("tag '{}' needs to match '<key>=<value>'".format(pair))
+            if not TAG_KEY.match(k):
+                raise UserError("tag key '{}' needs to match the rexex '{}'".format(k, TAG_KEY.pattern))
+            if not TAG_VAL.match(v):
+                raise UserError("tag value '{}' needs to match the rexex '{}'".format(v, TAG_VAL.pattern))
+            tags[k] = v
+        res = await self.call(
+            'org.labgrid.coordinator.set_place_tags', place.name, tags
+        )
+        if not res:
+            raise ServerError(
+                "failed to set tags {} for place {}".format(' '.join(self.args.tags), place.name)
             )
         return res
 
@@ -514,10 +567,28 @@ class ClientSession(ApplicationSession):
         res = await self.call(
             'org.labgrid.coordinator.acquire_place', place.name
         )
-        if not res:
-            raise ServerError("failed to acquire place {}".format(place.name))
-        else:
+        if res:
             print("acquired place {}".format(place.name))
+            return
+
+        # check potential failure causes
+        for exporter, groups in sorted(self.resources.items()):
+            for group_name, group in sorted(groups.items()):
+                for resource_name, resource in sorted(group.items()):
+                    resource_path = (exporter, group_name, resource.cls, resource_name)
+                    if resource.acquired is None:
+                        continue
+                    match = place.getmatch(resource_path)
+                    if match is None:
+                        continue
+                    name = resource_name
+                    if match.rename:
+                        name = match.rename
+                    print("Matching resource '{}' ({}/{}/{}/{}) already acquired by place '{}'".format(
+                        name, exporter, group_name, resource.cls, resource_name, resource.acquired))
+
+        raise ServerError("failed to acquire place {}".format(place.name))
+
 
     async def release(self):
         """Release a previously acquired place"""
@@ -558,14 +629,7 @@ class ClientSession(ApplicationSession):
             print("allowed {} for place {}".format(self.args.user, place.name))
 
     def get_target_resources(self, place):
-        if not place.acquired:
-            raise UserError("place {} is not acquired".format(place.name))
-        if gethostname()+'/'+getuser() not in place.allowed:
-            host, user = place.acquired.split('/')
-            if user != getuser():
-                raise UserError("place {} is not acquired by your user, acquired by {}".format(place.name, user))  # pylint: disable=line-too-long
-            if host != gethostname():
-                raise UserError("place {} is not acquired on this computer, acquired on {}".format(place.name, host))  # pylint: disable=line-too-long
+        self._check_allowed(place)
         resources = {}
         for resource_path in place.acquired_resources:
             match = place.getmatch(resource_path)
@@ -661,9 +725,11 @@ class ClientSession(ApplicationSession):
         from ..resource.modbus import ModbusTCPCoil
         from ..resource.onewireport import OneWirePIO
         from ..resource.remote import NetworkDeditecRelais8
+        from ..resource.remote import NetworkSysfsGPIO
         from ..driver.modbusdriver import ModbusCoilDriver
         from ..driver.onewiredriver import OneWirePIODriver
         from ..driver.deditecrelaisdriver import DeditecRelaisDriver
+        from ..driver.gpiodriver import GpioDigitalOutputDriver
         drv = None
         for resource in target.resources:
             if isinstance(resource, ModbusTCPCoil):
@@ -687,6 +753,13 @@ class ClientSession(ApplicationSession):
                     target.set_binding_map({"relais": name})
                     drv = DeditecRelaisDriver(target, name=name)
                 break
+            elif isinstance(resource, NetworkSysfsGPIO):
+                try:
+                    drv = target.get_driver(GpioDigitalOutputDriver, name=name)
+                except NoDriverFoundError:
+                    target.set_binding_map({"gpio": name})
+                    drv = GpioDigitalOutputDriver(target, name=name)
+                break
         if not drv:
             raise UserError("target has no compatible resource available")
         target.activate(drv)
@@ -698,9 +771,8 @@ class ClientSession(ApplicationSession):
         elif action == 'low':
             drv.set(False)
 
-    def _console(self, place):
+    async def _console(self, place, target):
         name = self.args.name
-        target = self._get_target(place)
         from ..resource import NetworkSerialPort
         resource = target.get_resource(NetworkSerialPort, name=name)
         host, port = proxymanager.get_host_and_port(resource)
@@ -712,21 +784,40 @@ class ClientSession(ApplicationSession):
             'microcom', '-s', str(resource.speed), '-t',
             "{}:{}".format(host, port)
         ]
-        print("connecting to ", resource, "calling ", " ".join(call))
-        res = subprocess.call(call)
-        if res:
-            print("connection lost")
-        return res == 0
+        print("connecting to {} calling {}".format(resource, " ".join(call)))
+        p = await asyncio.create_subprocess_exec(*call)
+        while p.returncode is None:
+            try:
+                await asyncio.wait_for(p.wait(), 1.0)
+            except asyncio.TimeoutError:
+                # subprocess is still running
+                pass
 
-    def console(self):
-        place = self.get_acquired_place()
+            try:
+                self._check_allowed(place)
+            except UserError:
+                p.terminate()
+                try:
+                    await asyncio.wait_for(p.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    # try harder
+                    p.kill()
+                    await asyncio.wait_for(p.wait(), 1.0)
+                raise
+        if p.returncode:
+            print("connection lost")
+            return False
+        return True
+
+    async def console(self, place, target):
         while True:
-            res = self._console(place)
+            res = await self._console(place, target)
             if res:
                 break
             if not self.args.loop:
                 break
-            sleep(1.0)
+            await asyncio.sleep(1.0)
+    console.needs_target = True
 
     def fastboot(self):
         place = self.get_acquired_place()
@@ -765,9 +856,9 @@ class ClientSession(ApplicationSession):
         args = self.args.filename
         target = self._get_target(place)
         from ..protocol.bootstrapprotocol import BootstrapProtocol
-        from ..driver.usbloader import IMXUSBDriver, MXSUSBDriver
+        from ..driver.usbloader import IMXUSBDriver, MXSUSBDriver, RKUSBDriver
         from ..driver.openocddriver import OpenOCDDriver
-        from ..resource.remote import (NetworkMXSUSBLoader, NetworkIMXUSBLoader,
+        from ..resource.remote import (NetworkMXSUSBLoader, NetworkIMXUSBLoader, NetworkRKUSBLoader,
                                        NetworkAlteraUSBBlaster)
         drv = None
         try:
@@ -795,6 +886,13 @@ class ClientSession(ApplicationSession):
                     except NoDriverFoundError:
                         drv = OpenOCDDriver(target, name=None, **args)
                     drv.interface.timeout = self.args.wait
+                    break
+                elif isinstance(resource, NetworkRKUSBLoader):
+                    try:
+                        drv = target.get_driver(RKUSBDriver)
+                    except NoDriverFoundError:
+                        drv = RKUSBDriver(target, name=None)
+                    drv.loader.timeout = self.args.wait
                     break
         if not drv:
             raise UserError("target has no compatible resource available")
@@ -992,10 +1090,60 @@ class ClientSession(ApplicationSession):
         except FileNotFoundError as e:
             raise UserError(e)
 
+    async def create_reservation(self):
+        filters = ' '.join(self.args.filters)
+        prio = self.args.prio
+        res = await self.call('org.labgrid.coordinator.create_reservation', filters, prio=prio)
+        if res is None:
+            raise ServerError("failed to create reservation")
+        ((token, config),) = res.items() # we get a one-item dict
+        config = filter_dict(config, Reservation, warn=True)
+        res = Reservation(token=token, **config)
+        if self.args.shell:
+            print("export LG_TOKEN={}".format(res.token))
+        else:
+            print("Reservation '{}':".format(res.token))
+            res.show(level=1)
+        if self.args.wait:
+            if not self.args.shell:
+                print("Waiting for allocation...")
+            await self._wait_reservation(res.token, verbose=False)
+
+    async def cancel_reservation(self):
+        token = self.args.token
+        res = await self.call('org.labgrid.coordinator.cancel_reservation', token)
+        if not res:
+            raise ServerError("failed to cancel reservation {}".format(token))
+
+    async def _wait_reservation(self, token, verbose=True):
+        while True:
+            config = await self.call('org.labgrid.coordinator.poll_reservation', token)
+            if config is None:
+                raise ServerError("reservation not found")
+            config = filter_dict(config, Reservation, warn=True)
+            res = Reservation(token=token, **config)
+            if verbose:
+                res.show()
+            if res.state is ReservationState.waiting:
+                await asyncio.sleep(1.0)
+            else:
+                break
+
+    async def wait_reservation(self):
+        token = self.args.token
+        await self._wait_reservation(token)
+
+    async def print_reservations(self):
+        reservations = await self.call('org.labgrid.coordinator.get_reservations')
+        for token, config in sorted(reservations.items(), key=lambda x: (-x[1]['prio'], x[1]['created'])):
+            config = filter_dict(config, Reservation, warn=True)
+            res = Reservation(token=token, **config)
+            print("Reservation '{}':".format(res.token))
+            res.show(level=1)
+
+
 def start_session(url, realm, extra):
-    from autobahn.wamp.types import ComponentConfig
-    from autobahn.websocket.util import parse_url
-    from autobahn.asyncio.websocket import WampWebSocketClientFactory
+    from autobahn.asyncio.wamp import ApplicationRunner
 
     loop = asyncio.get_event_loop()
     ready = asyncio.Event()
@@ -1010,18 +1158,16 @@ def start_session(url, realm, extra):
 
     session = [None]
 
-    url = proxymanager.get_url(url, default_port=20408)
-
-    def create():
+    def make(*args, **kwargs):
         nonlocal session
-        cfg = ComponentConfig(realm, extra)
-        session[0] = ClientSession(cfg)
+        session[0] = ClientSession(*args, **kwargs)
         return session[0]
 
-    transport_factory = WampWebSocketClientFactory(create, url=url)
-    _, host, port, _, _, _ = parse_url(url)
+    url = proxymanager.get_url(url, default_port=20408)
 
-    coro = loop.create_connection(transport_factory, host, port)
+    runner = ApplicationRunner(url, realm=realm, extra=extra)
+    coro = runner.run(make, start_loop=False)
+
     loop.run_until_complete(coro)
     loop.run_until_complete(ready.wait())
     return session[0]
@@ -1044,6 +1190,7 @@ def find_any_role_with_place(config):
     return None, None
 
 def main():
+    processwrapper.enable_print()
     logging.basicConfig(
         level=logging.INFO,
         format='%(levelname)7s: %(message)s',
@@ -1055,6 +1202,7 @@ def main():
     place = os.environ.get('LG_PLACE', place)
     state = os.environ.get('STATE', None)
     state = os.environ.get('LG_STATE', state)
+    token = os.environ.get('LG_TOKEN', None)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1165,6 +1313,12 @@ def main():
                                       help="update the place comment")
     subparser.add_argument('comment', nargs='+')
     subparser.set_defaults(func=ClientSession.set_comment)
+
+    subparser = subparsers.add_parser('set-tags',
+                                      help="update the place tags")
+    subparser.add_argument('tags', metavar='KEY=VALUE', nargs='+',
+                           help="use an empty value for deletion")
+    subparser.set_defaults(func=ClientSession.set_tags)
 
     subparser = subparsers.add_parser('add-match',
                                       help="add one (or multiple) match pattern(s) to a place")
@@ -1292,6 +1446,28 @@ def main():
     subparser.add_argument('filename', help='filename to boot on the target')
     subparser.set_defaults(func=ClientSession.write_image)
 
+    subparser = subparsers.add_parser('reserve', help="create a reservation")
+    subparser.add_argument('--wait', action='store_true',
+                           help="wait until the reservation is allocated")
+    subparser.add_argument('--shell', action='store_true',
+                           help="format output as shell variables")
+    subparser.add_argument('--prio', type=float, default=0.0,
+                           help="priority relative to other reservations (default 0)")
+    subparser.add_argument('filters', metavar='KEY=VALUE', nargs='+',
+                           help="required tags")
+    subparser.set_defaults(func=ClientSession.create_reservation)
+
+    subparser = subparsers.add_parser('cancel-reservation', help="cancel a reservation")
+    subparser.add_argument('token', type=str, default=token, nargs='?' if token else None)
+    subparser.set_defaults(func=ClientSession.cancel_reservation)
+
+    subparser = subparsers.add_parser('wait', help="wait for a reservation to be allocated")
+    subparser.add_argument('token', type=str, default=token, nargs='?' if token else None)
+    subparser.set_defaults(func=ClientSession.wait_reservation)
+
+    subparser = subparsers.add_parser('reservations', help="list current reservations")
+    subparser.set_defaults(func=ClientSession.print_reservations)
+
     # make any leftover arguments available for some commands
     args, leftover = parser.parse_known_args()
     if args.command not in ['ssh']:
@@ -1342,16 +1518,25 @@ def main():
         try:
             session = start_session(args.crossbar, os.environ.get("LG_CROSSBAR_REALM", "realm1"),
                                     extra)
-            if asyncio.iscoroutinefunction(args.func):
-                session.loop.run_until_complete(args.func(session))
-            else:
-                args.func(session)
+            try:
+                if asyncio.iscoroutinefunction(args.func):
+                    if getattr(args.func, 'needs_target', False):
+                        place = session.get_acquired_place()
+                        target = session._get_target(place)
+                        coro = args.func(session, place, target)
+                    else:
+                        coro = args.func(session)
+                    session.loop.run_until_complete(coro)
+                else:
+                    args.func(session)
+            finally:
+                session.loop.close()
         except NoResourceFoundError as e:
             if args.debug:
                 traceback.print_exc()
             else:
                 print("{}: error: {}".format(parser.prog, e), file=sys.stderr)
-            print("This may be caused by disconnected exporter or wrong match entries.\nYou can use the 'show' command to all matching resources.", file=sys.stderr)  # pylint: disable=line-too-long
+            print("This may be caused by disconnected exporter or wrong match entries.\nYou can use the 'show' command to review all matching resources.", file=sys.stderr)  # pylint: disable=line-too-long
             exitcode = 1
         except NoDriverFoundError as e:
             if args.debug:

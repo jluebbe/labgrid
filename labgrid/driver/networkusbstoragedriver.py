@@ -1,4 +1,5 @@
 # pylint: disable=no-member
+import enum
 import logging
 import subprocess
 import os
@@ -12,9 +13,16 @@ from ..util.managedfile import ManagedFile
 from .common import Driver
 from ..driver.exception import ExecutionError
 
+from ..util.helper import processwrapper
+
+
+class Mode(enum.Enum):
+    DD = 1
+    BMAPTOOL = 2
+
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class NetworkUSBStorageDriver(Driver):
     bindings = {
         "storage": {
@@ -40,7 +48,7 @@ class NetworkUSBStorageDriver(Driver):
         pass
 
     @step(args=['filename'])
-    def write_image(self, filename=None):
+    def write_image(self, filename=None, mode=Mode.DD):
         if not self.storage.path:
             raise ExecutionError(
                 "{} is not available".format(self.storage_path)
@@ -51,13 +59,27 @@ class NetworkUSBStorageDriver(Driver):
         mf = ManagedFile(filename, self.storage)
         mf.sync_to_resource()
         self.logger.info("pwd: %s", os.getcwd())
-        args = [
-            "dd",
-            "if={}".format(mf.get_remote_path()),
-            "of={} status=progress bs=4M conv=fdatasync"
-            .format(self.storage.path)
-        ]
-        subprocess.check_call(
+
+        if mode == Mode.DD:
+            args = [
+                "dd",
+                "if={}".format(mf.get_remote_path()),
+                "of={}".format(self.storage.path),
+                "status=progress",
+                "bs=4M",
+                "conv=fdatasync"
+            ]
+        elif mode == Mode.BMAPTOOL:
+            args = [
+                "bmaptool",
+                "copy",
+                "{}".format(mf.get_remote_path()),
+                "{}".format(self.storage.path),
+            ]
+        else:
+            raise ValueError
+
+        processwrapper.check_output(
             self.storage.command_prefix + args
         )
 
@@ -68,5 +90,5 @@ class NetworkUSBStorageDriver(Driver):
                 "{} is not available".format(self.storage_path)
             )
         args = ["cat", "/sys/class/block/{}/size" % self.storage.path[5:]]
-        size = subprocess.check_output(self.storage.command_prefix + args)
+        size = processwrapper.check_output(self.storage.command_prefix + args)
         return int(size)

@@ -1,19 +1,31 @@
 # pylint: disable=unsubscriptable-object
 import socket
 import time
+import enum
+import random
+import re
+import string
 from datetime import datetime
 from fnmatch import fnmatchcase
 
 import attr
 
 
-@attr.s(cmp=False)
+TAG_KEY = re.compile(r"[a-z][a-z0-9_]+")
+TAG_VAL = re.compile(r"[a-z0-9_]?")
+
+
+@attr.s(eq=False)
 class ResourceEntry:
     data = attr.ib()  # cls, params
-    acquired = attr.ib(default=None)
 
     def __attrs_post_init__(self):
+        self.data.setdefault('acquired', None)
         self.data.setdefault('avail', False)
+
+    @property
+    def acquired(self):
+        return self.data['acquired']
 
     @property
     def avail(self):
@@ -47,9 +59,24 @@ class ResourceEntry:
             'avail': self.avail,
         }
 
+    def update(self, data):
+        """apply updated information from the exporter on the coordinator"""
+        data = data.copy()
+        data.setdefault('acquired', None)
+        data.setdefault('avail', False)
+        self.data = data
 
-@attr.s(cmp=True, repr=False, str=False)
-# This class requires cmp=True, since we put the matches into a list and require
+    def acquire(self, place_name):
+        assert self.data['acquired'] is None
+        self.data['acquired'] = place_name
+
+    def release(self):
+        # ignore repeated releases
+        self.data['acquired'] = None
+
+
+@attr.s(eq=True, repr=False, str=False)
+# This class requires eq=True, since we put the matches into a list and require
 # the cmp functions to be able to remove the matches from the list later on.
 class ResourceMatch:
     exporter = attr.ib()
@@ -57,7 +84,7 @@ class ResourceMatch:
     cls = attr.ib()
     name = attr.ib(default=None)
     # rename is just metadata, so don't use it for comparing matches
-    rename = attr.ib(default=None, cmp=False)
+    rename = attr.ib(default=None, eq=False)
 
     @classmethod
     def fromstr(cls, pattern):
@@ -77,7 +104,7 @@ class ResourceMatch:
     def __str__(self):
         result = repr(self)
         if self.rename:
-            result += " → " + self.rename
+            result += " -> " + self.rename
         return result
 
     def ismatch(self, resource_path):
@@ -95,43 +122,86 @@ class ResourceMatch:
         return True
 
 
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class Place:
     name = attr.ib()
     aliases = attr.ib(default=attr.Factory(set), converter=set)
     comment = attr.ib(default="")
+    tags = attr.ib(default=attr.Factory(dict))
     matches = attr.ib(default=attr.Factory(list))
     acquired = attr.ib(default=None)
     acquired_resources = attr.ib(default=attr.Factory(list))
     allowed = attr.ib(default=attr.Factory(set), converter=set)
     created = attr.ib(default=attr.Factory(time.time))
     changed = attr.ib(default=attr.Factory(time.time))
+    reservation = attr.ib(default=None)
 
     def asdict(self):
-        result = attr.asdict(self)
-        del result['name']  # the name is the key in the places dict
-        return result
+        # in the coordinator, we have resource objects, otherwise just a path
+        acquired_resources = []
+        for resource in self.acquired_resources:  # pylint: disable=not-an-iterable
+            if isinstance(resource, (tuple, list)):
+                acquired_resources.append(resource)
+            else:
+                acquired_resources.append(resource.path)
+
+        return {
+            'aliases': list(self.aliases),
+            'comment': self.comment,
+            'tags': self.tags,
+            'matches': [attr.asdict(x) for x in self.matches],
+            'acquired': self.acquired,
+            'acquired_resources': acquired_resources,
+            'allowed': list(self.allowed),
+            'created': self.created,
+            'changed': self.changed,
+            'reservation': self.reservation,
+        }
+
+    def update(self, config):
+        fields = attr.fields_dict(type(self))
+        for k, v in config.items():
+            assert k in fields
+            if k == 'name':
+                # we cannot rename places
+                assert v == self.name
+                continue
+            setattr(self, k, v)
 
     def show(self, level=0):
         indent = '  ' * level
-        print(indent + "aliases: {}".format(', '.join(self.aliases)))
-        print(indent + "comment: {}".format(self.comment))
+        if self.aliases:
+            print(indent + "aliases: {}".format(', '.join(self.aliases)))
+        if self.comment:
+            print(indent + "comment: {}".format(self.comment))
+        if self.tags:
+            print(indent + "tags: {}".format(
+                ', '.join(k+"="+v for k, v in sorted(self.tags.items()))
+            ))
         print(indent + "matches:")
         for match in self.matches:  # pylint: disable=not-an-iterable
             print(indent + "  {}".format(match))
         print(indent + "acquired: {}".format(self.acquired))
         print(indent + "acquired resources:")
-        for resource_path in self.acquired_resources:  # pylint: disable=not-an-iterable
+        # in the coordinator, we have resource objects, otherwise just a path
+        for resource in self.acquired_resources:  # pylint: disable=not-an-iterable
+            if isinstance(resource, (tuple, list)):
+                resource_path = resource
+            else:
+                resource_path = resource.path
             match = self.getmatch(resource_path)
             if match.rename:
-                print(indent + "  {} → {}".format(
+                print(indent + "  {} -> {}".format(
                     '/'.join(resource_path), match.rename))
             else:
                 print(indent + "  {}".format(
                     '/'.join(resource_path)))
-        print(indent + "allowed: {}".format(', '.join(self.allowed)))
+        if self.allowed:
+            print(indent + "allowed: {}".format(', '.join(self.allowed)))
         print(indent + "created: {}".format(datetime.fromtimestamp(self.created)))
         print(indent + "changed: {}".format(datetime.fromtimestamp(self.changed)))
+        if self.reservation:
+            print(indent + "reservation: {}".format(self.reservation))
 
     def getmatch(self, resource_path):
         """Return the ResourceMatch object for the given resource path or None if not found.
@@ -153,6 +223,67 @@ class Place:
 
     def touch(self):
         self.changed = time.time()
+
+
+class ReservationState(enum.Enum):
+    waiting = 0
+    allocated = 1
+    acquired = 2
+    expired = 3
+    invalid = 4
+
+
+@attr.s(eq=False)
+class Reservation:
+    owner = attr.ib(validator=attr.validators.instance_of(str))
+    token = attr.ib(default=attr.Factory(
+        lambda: ''.join(random.choice(string.ascii_uppercase+string.digits) for i in range(10))))
+    state = attr.ib(default='waiting',
+            converter=lambda x: x if isinstance(x, ReservationState) else ReservationState[x],
+            validator=attr.validators.instance_of(ReservationState))
+    prio = attr.ib(default=0.0, validator=attr.validators.instance_of(float))
+    # a dictionary of name -> filter dicts
+    filters = attr.ib(default=attr.Factory(dict), validator=attr.validators.instance_of(dict))
+    # a dictionary of name -> place names
+    allocations = attr.ib(default=attr.Factory(dict), validator=attr.validators.instance_of(dict))
+    created = attr.ib(default=attr.Factory(time.time))
+    timeout = attr.ib(default=attr.Factory(lambda: time.time() + 60))
+
+    def asdict(self):
+        return {
+            'owner': self.owner,
+            'state': self.state.name,
+            'prio': self.prio,
+            'filters': self.filters,
+            'allocations': self.allocations,
+            'created': self.created,
+            'timeout': self.timeout,
+        }
+
+    def refresh(self, delta=60):
+        self.timeout = max(self.timeout, time.time() + delta)
+
+    @property
+    def expired(self):
+        return self.timeout < time.time()
+
+    def show(self, level=0):
+        indent = '  ' * level
+        print(indent + "owner: {}".format(self.owner))
+        print(indent + "token: {}".format(self.token))
+        print(indent + "state: {}".format(self.state.name))
+        if self.prio:
+            print(indent + "prio: {}".format(self.prio))
+        print(indent + "filters:")
+        for name, filter in self.filters.items():
+            print(indent + "  {}: {}".format(name, " ".join([k+"="+v for k, v in filter.items()])))
+        if self.allocations:
+            print(indent + "allocations:")
+            for name, allocation in self.allocations.items():
+                print(indent + "  {}: {}".format(name, ", ".join(allocation)))
+        print(indent + "created: {}".format(datetime.fromtimestamp(self.created)))
+        print(indent + "timeout: {}".format(datetime.fromtimestamp(self.timeout)))
+
 
 def enable_tcp_nodelay(session):
     """

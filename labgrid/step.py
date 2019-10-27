@@ -58,10 +58,16 @@ class StepEvent:
         result = [str(self.step)]
         if self.resource:
             result.append(self.resource.__class__.__name__)
-        result.append(", ".join(
-            "{}={}".format(k, repr(v)) for k, v in self.data.items() if v is not None
-        ))
+        data = self.data.copy()
+        duration = data.pop('duration', 0.0)
+        pairs = ["{}={}".format(k, repr(v)) for k, v in data.items() if v is not None]
+        if duration >= 0.001:
+            pairs.append("duration={:.3f}".format(duration))
+        result.append(", ".join(pairs))
         return " ".join(result)
+
+    def __setitem__(self, k, v):
+        self.data[k] = v
 
     def _invalidate(self):
         self.ts = None
@@ -98,6 +104,7 @@ class Step:
         self.tag = tag
         self.args = None
         self.result = None
+        self.exception = None
         self._start_ts = None
         self._stop_ts = None
         self._skipped = False
@@ -112,6 +119,8 @@ class Step:
         ]
         if self.args is not None:
             result.append(", args={}".format(self.args))
+        if self.exception is not None:
+            result.append(", exception={}".format(self.exception))
         if self.result is not None:
             result.append(", result={}".format(self.result))
         duration = self.duration
@@ -170,11 +179,15 @@ class Step:
         assert self._start_ts is not None
         assert self._stop_ts is None
         self._stop_ts = monotonic()
-        # TODO: report duration
-        self._notify(StepEvent(self, {
-            'state': 'stop',
-            'result': self.result,
-        }))
+        event = StepEvent(self, {'state': 'stop'})
+        if self.exception:
+            event['exception'] = self.exception
+        else:
+            event['result'] = self.result
+        duration = self.duration
+        if duration:
+            event['duration'] = duration
+        self._notify(event)
         steps.pop(self)
 
     def __del__(self):
@@ -206,6 +219,9 @@ def step(*, title=None, args=[], result=False, tag=None):  # pylint: disable=unu
                 _result = func(*_args, **_kwargs)
                 if result:
                     step.result = _result
+            except Exception as e:
+                step.exception = e
+                raise
             finally:
                 step.stop()
             return _result

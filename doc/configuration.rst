@@ -111,6 +111,30 @@ The example describes port 0 on the remote power switch
 Used by:
   - `NetworkPowerDriver`_
 
+PDUDaemonPort
++++++++++++++
+A PDUDaemonPort describes a PDU port accessible via `PDUDaemon
+<https://github.com/pdudaemon/pdudaemon>`_.
+As one PDUDaemon instance can control many PDUs, the instance name from the
+PDUDaemon configuration file needs to be specified.
+
+.. code-block:: yaml
+
+   PDUDaemonPort:
+     host: pduserver
+     pdu: apc-snmpv3-noauth
+     index: 1
+
+The example describes port 1 on the PDU configured as `apc-snmpv3-noauth`, with
+PDUDaemon running on the host `pduserver`.
+
+- host (str): name of the host running the PDUDaemon
+- pdu (str): name of the PDU in the configuration file
+- index (int): index of the power port on the PDU
+
+Used by:
+  - `PDUDaemonDriver`_
+
 YKUSHPowerPort
 ++++++++++++++
 A YKUSHPowerPort describes a YEPKIT YKUSH USB (HID) switchable USB hub.
@@ -290,6 +314,21 @@ An MXSUSBLoader resource describes a USB device in the mxs loader state.
 Used by:
   - `MXSUSBDriver`_
 
+RKUSBLoader
+~~~~~~~~~~~~
+An RKUSBLoader resource describes a USB device in the rockchip loader state.
+
+.. code-block:: yaml
+
+   RKUSBLoader:
+     match:
+       'sys_name': '1-3'
+
+- match (str): key and value for a udev match, see `udev Matching`_
+
+Used by:
+  - `RKUSBDriver`_
+
 NetworkMXSUSBLoader
 ~~~~~~~~~~~~~~~~~~~
 A NetworkMXSUSBLoader descibes an `MXSUSBLoader`_ available on a remote computer.
@@ -297,6 +336,10 @@ A NetworkMXSUSBLoader descibes an `MXSUSBLoader`_ available on a remote computer
 NetworkIMXUSBLoader
 ~~~~~~~~~~~~~~~~~~~
 A NetworkIMXUSBLoader descibes an `IMXUSBLoader`_ available on a remote computer.
+
+NetworkRKUSBLoader
+~~~~~~~~~~~~~~~~~~~
+A NetworkRKUSBLoader descibes an `RKUSBLoader`_ available on a remote computer.
 
 AndroidFastboot
 ~~~~~~~~~~~~~~~
@@ -468,6 +511,33 @@ NetworkUSBTMC
 A :any:`NetworkUSBTMC` resource describes a :any:`USBTMC` resource available
 on a remote computer.
 
+Flashrom
+~~~~~~~~
+A Flashrom resource is used to configure the parameters to a local installed flashrom instance.
+It is assumed that flashrom is installed on the host and the executable is configured in:
+
+.. code-block:: yaml
+
+  tools:
+    flashrom: '/usr/sbin/flashrom'
+
+The resource must configure which programmer to use and the parameters to the programmer.
+The programmer parameter is passed directly to the flashrom bin hence man(8) flashrom
+can be used for reference.
+Below an example where the local spidev is used.
+
+.. code-block:: yaml
+
+  Flashrom:
+    programmer: 'linux_spi:dev=/dev/spidev0.1,spispeed=30000'
+
+Used by:
+  - `FlashromDriver`_
+
+NetworkFlashRom
+~~~~~~~~~~~~~~~
+A NetworkFlashrom descibes an `Flashrom`_ available on a remote computer.
+
 XenaManager
 ~~~~~~~~~~~
 A XenaManager resource describe a Xena Manager instance which is the instance the
@@ -498,6 +568,37 @@ them to the internal environment.
 
 Used by:
   - potentially all drivers
+
+DockerDaemon
+~~~~~~~~~~~~
+A DockerDaemon describes where to contact a docker daemon process.
+DockerDaemon also participates in managing `NetworkService` instances
+created through interaction with that daemon.
+
+.. code-block:: yaml
+
+   DockerDaemon:
+     docker_daemon_url: 'unix://var/run/docker.sock'
+
+The example describes a docker daemon accessible via the
+'/var/run/docker.sock' unix socket. When used by a `DockerDriver`, the
+`DockerDriver` will first create a docker container which the
+DockerDaemon resource will subsequently use to create one/more
+`NetworkService` instances - as specified by `DockerDriver` configuration.
+Each `NetworkService` instance corresponds to a network service running inside
+the container.
+
+Moreover, DockerDaemon will remove any hanging containers if
+DockerDaemon is used several times in a row - as is the case when
+executing test suites. Normally `DockerDriver` - when deactivated -
+cleans up the created docker container; programming errors, keyboard
+interrupts or unix kill signals may lead to hanging containers, however;
+therefore auto-cleanup is important.
+
+- docker_daemon_url (str): The url of the daemon to use for this target.
+
+Used by:
+  - `DockerDriver`_
 
 udev Matching
 ~~~~~~~~~~~~~
@@ -837,8 +938,7 @@ Arguments:
   - prompt (regex): barebox prompt to match
   - autoboot (regex, default="stop autoboot"): autoboot message to match
   - interrupt (str, default="\\n"): string to interrupt autoboot (use "\\x03" for CTRL-C)
-  - startstring (regex, default="[\n]barebox 20\d+"): string that indicates that Barebox is starting
-  - bootstring (regex, default="Linux version \d"): succesfully jumped into the kernel 
+  - bootstring (regex, default="Linux version \d"): succesfully jumped into the kernel
   - password (str): optional, password to use for access to the shell
   - login_timeout (int): optional, timeout for access to the shell
 
@@ -984,6 +1084,30 @@ Implements:
 Arguments:
   - delay (float): optional delay in seconds between off and on
 
+PDUDaemonDriver
+~~~~~~~~~~~~~~~
+A PDUDaemonDriver controls a `PDUDaemonPort`, allowing control of the target
+power state without user interaction.
+
+.. note::
+  PDUDaemon processess commands in the background, so the actual state change
+  may happen several seconds after calls to PDUDaemonDriver return.
+
+Binds to:
+  port:
+    - `PDUDaemonPort`_
+
+Implements:
+  - :any:`PowerProtocol`
+
+.. code-block:: yaml
+
+   PDUDaemonDriver:
+     delay: 5
+
+Arguments:
+  - delay (int): optional delay in seconds between off and on
+
 YKUSHPowerDriver
 ~~~~~~~~~~~~~~~~
 A YKUSHPowerDriver controls a `YKUSHPowerPort`, allowing control of the
@@ -1043,6 +1167,24 @@ Implements:
 Arguments:
   - delay (float): optional delay in seconds between off and on
 
+GpioDigitalOutputDriver
+~~~~~~~~~~~~~~~~~~~~~~~
+The GpioDigitalOutputDriver writes a digital signal to a GPIO line.
+
+This driver configures GPIO lines via `the sysfs kernel interface <https://www.kernel.org/doc/html/latest/gpio/sysfs.html>`.
+While the driver automatically exports the GPIO, it does not configure it in any other way than as an output.
+
+Implements:
+  - :any:`DigitalOutputProtocol`
+
+.. code-block:: yaml
+
+   GpioDigitalOutputDriver:
+     index: 42
+
+Arguments:
+  - index (int): The index of a GPIO line
+
 SerialPortDigitalOutputDriver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The SerialPortDigitalOutputDriver makes it possible to use a UART
@@ -1066,6 +1208,32 @@ Arguments:
     bind against. This is only needed if you have multiple
     SerialDriver in your environment (what is likely to be the case
     if you are using this driver).
+
+FileDigitalOutputDriver
+~~~~~~~~~~~~~~~~~~~~~~~
+The FileDigitalOutputDriver uses a file
+to write arbitrary string representations of booleans
+to a file and read from it.
+
+The file is checked to exist at configuration time.
+
+If the file's content does not match any of the representations
+reading defaults to False.
+
+A prime example for using this driver is Linux's sysfs.
+
+Implements:
+  - :any:`DigitalOutputProtocol`
+
+.. code-block:: yaml
+
+   FileDigitalOutputDriver:
+     filepath: "/sys/class/leds/myled/brightness"
+
+Arguments:
+  - filepath (str): A file that is used for reads and writes.
+  - false_repr (str): A representation for False (default: "0\n")
+  - true_repr (str): A representation for True (default: "1\n")
 
 ModbusCoilDriver
 ~~~~~~~~~~~~~~~~
@@ -1139,6 +1307,36 @@ Implements:
 
 Arguments:
   - image (str): The key in :ref:`images <labgrid-device-config-images>` containing the path of an image to bootstrap onto the target
+
+RKUSBDriver
+~~~~~~~~~~~~
+A RKUSBDriver is used to upload an image into a device in the rockchip USB loader
+state. This is useful to bootstrap a bootloader onto a device.
+
+Binds to:
+  loader:
+    - `RKUSBLoader`_
+    - `NetworkRKUSBLoader`_
+
+Implements:
+  - :any:`BootstrapProtocol`
+
+.. code-block:: yaml
+
+   targets:
+     main:
+       drivers:
+         RKUSBDriver:
+           image: mybootloaderkey
+           usb_loader: myloaderkey
+
+   images:
+     mybootloaderkey: path/to/mybootloader.img
+     myloaderkey: path/to/myloader.bin
+
+Arguments:
+  - image (str): The key in :ref:`images <labgrid-device-config-images>` containing the path of an image to bootstrap onto the target
+  - usb_loader (srt): The key in :ref:`images <labgrid-device-config-images>` containing the path of an image to bootstrap onto the target
 
 USBStorageDriver
 ~~~~~~~~~~~~~~~~
@@ -1237,7 +1435,7 @@ Binds to:
    images:
      dtb: ../images/mydtb.dtb
      kernel: ../images/vmlinuz
-     
+
 
 Implements:
   - :any:`ConsoleProtocol`
@@ -1258,7 +1456,7 @@ Arguments:
 
 The qemudriver also requires the specification of:
 
-- a tool key, this contains the path to the qemu binary 
+- a tool key, this contains the path to the qemu binary
 - an image key, the path to the kernel image and optionally the dtb key to
   specify the build device tree
 - a path key, this is the path to the rootfs
@@ -1335,6 +1533,28 @@ but more devices can be added by extending `on_activate()` in
 ``labgrid/driver/usbtmcdriver.py`` and writing a corresponding backend in
 ``labgrid/driver/usbtmc/``.
 
+FlashromDriver
+~~~~~~~~~~~~~~
+The :any:`FlashromDriver` is used to flash a rom, using the flashrom utility.
+
+.. code-block:: yaml
+
+   FlashromDriver:
+        image: 'foo'
+   images:
+     foo: ../images/image_to_load.raw
+
+Binds to:
+  flashrom_resource:
+    - `Flashrom`_
+    - `NetworkFlashrom`_
+
+The FlashromDriver allows using the linux util "flashrom" to write directly to a ROM e.g. a NOR SPI
+flash. The assumption is that the device flashing the DUT e.g. an exporter is wired to the Flash
+to be flashed. The driver implements the bootstrap protocol.
+The driver uses tool configuration section and the key: flashrom to determine the path of the
+installed flashrom utility.
+
 XenaDriver
 ~~~~~~~~~~
 The XenaDriver allows to use Xena networking tests equipment. Using the xenavalkyrie library
@@ -1347,10 +1567,46 @@ Binds to:
 The driver is supposed to work with all Xena products from the "Valkyrie Layer 2-3 Test platform"
 Currently tested on a `XenaCompact` chassis equipped with a `1 GE test module`.
 
+DockerDriver
+~~~~~~~~~~~~
+A DockerDriver binds to a `DockerDaemon` and is used to create and control one
+docker container.
+
+| The driver uses the docker python module to interact with the docker daemon.
+| For more information on the parameters see:
+| https://docker-py.readthedocs.io/en/stable/containers.html#container-objects
+
+Binds to:
+  docker_daemon:
+    - `DockerDaemon`_
+
+Implements:
+  - :any:`PowerProtocol`
+
+.. code-block:: yaml
+
+   DockerDriver:
+     image_uri: "rastasheep/ubuntu-sshd:16.04"
+     container_name: "ubuntu-lg-example"
+     host_config: {"network_mode":"bridge"}
+     network_services: [{"port":22,"username":"root","password":"root"}]
+
+Arguments:
+  - image_uri (str): identifier of the docker image to use (may have a tag suffix)
+  - command (str): command to run in the container (optional, depends on image)
+  - volumes (list): list to configure volumes mounted inside the container (optional)
+  - container_name (str): name of the container
+  - environment (list): list of environment variables (optional)
+  - host_config (dict): dictionary of host configurations
+  - network_services (list): dictionaries that describe individual `NetworkService`_
+    instances that come alive when the container is created. The "address" argument
+    which `NetworkService`_ also requires will be derived automatically upon container
+    creation.
+
 Strategies
 ----------
 
-Strategies are used to ensure that the device is in a certain state during a test. 
+Strategies are used to ensure that the device is in a certain state during a test.
 Such a state could be the boot loader or a booted Linux kernel with shell.
 
 BareboxStrategy
@@ -1417,6 +1673,33 @@ to transition to the shell state:
 
 this command would transition from the boot loader into a Linux shell and
 activate the shelldriver.
+
+DockerShellStrategy
+~~~~~~~~~~~~~~~~~~~
+A DockerShellStrategy has three states:
+
+- unknown
+- off
+- shell
+
+
+To transition to the shell state:
+
+::
+
+   t = get_target("main")
+   s = DockerShellStrategy(t)
+   s.transition("shell")
+
+
+These commands would activate the docker driver which creates and starts
+a docker container. This will subsequently make `NetworkService`_ instance(s)
+available which can be used for e.g. ssh access.
+
+Note: Transitioning to the "off" state will make any `NetworkService`_
+instance(s) unresponsive - which may in turn invalidate ssh connection
+sharing. Therefore, during automated test suites, refrain from transitioning
+to the "off" state.
 
 Reporters
 ---------

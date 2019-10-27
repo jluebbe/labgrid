@@ -9,11 +9,12 @@ from ..resource.udev import AlteraUSBBlaster
 from ..step import step
 from .common import Driver
 from .exception import ExecutionError
+from ..util.helper import processwrapper
 from ..util.managedfile import ManagedFile
 
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class QuartusHPSDriver(Driver):
     bindings = {
         "interface": {AlteraUSBBlaster, NetworkAlteraUSBBlaster},
@@ -75,4 +76,4 @@ class QuartusHPSDriver(Driver):
             "--addr=0x{:X}".format(address),
             "--operation=P {}".format(mf.get_remote_path()),
         ]
-        subprocess.check_call(cmd)
+        processwrapper.check_output(cmd)

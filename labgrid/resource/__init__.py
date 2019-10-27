@@ -12,3 +12,5 @@ from .udev import USBPowerPort
 from .common import Resource, ResourceManager, ManagedResource
 from .ykushpowerport import YKUSHPowerPort
 from .xenamanager import XenaManager
+from .flashrom import Flashrom, NetworkFlashrom
+from .docker import DockerManager, DockerDaemon, DockerConstants

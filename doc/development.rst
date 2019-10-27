@@ -75,7 +75,7 @@ provided by connecting drivers and resources on a given target at runtime.
     from labgrid.driver.common import Driver
     from labgrid.protocol import ConsoleProtocol
 
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleDriver(Driver, ConsoleProtocol):
         pass
 
@@ -93,7 +93,7 @@ be added into multiple drivers.
     from labgrid.driver.consoleexpectmixin import ConsoleExpectMixin
     from labgrid.protocol import ConsoleProtocol
 
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleDriver(ConsoleExpectMixin, Driver, ConsoleProtocol)
         pass
 
@@ -111,7 +111,7 @@ dependencies on other drivers or resources.
     from labgrid.protocol import ConsoleProtocol
 
     @target_factory.reg_driver
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleDriver(ConsoleExpectMixin, Driver, ConsoleProtocol)
         bindings = { "port": SerialPort }
         pass
@@ -145,7 +145,7 @@ The minimum requirement is a call to :code:`super().__attrs_post_init__()`.
     from labgrid.protocol import ConsoleProtocol
 
     @target_factory.reg_driver
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleDriver(ConsoleExpectMixin, Driver, ConsoleProtocol)
         bindings = { "port": SerialPort }
 
@@ -179,7 +179,7 @@ register it with the :any:`target_factory`.
     from labgrid.driver.common import Resource
 
     @target_factory.reg_resource
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleResource(Resource):
         pass
 
@@ -194,7 +194,7 @@ variables.
     from labgrid.driver.common import Resource
 
     @target_factory.reg_resource
-    @attr.s(cmp=False)
+    @attr.s(eq=False)
     class ExampleResource(Resource):
         examplevar1 = attr.ib()
         examplevar2 = attr.ib()
@@ -428,6 +428,10 @@ or get and put files:
 
    sshmanager.put_file('somehost', '/path/to/local/file', '/path/to/remote/file')
 
+.. note::
+  The SSHManager will reuse existing Control Sockets and set up a keepalive loop
+  to prevent timeouts of the socket during tests.
+
 ManagedFile
 -----------
 While the `SSHManager` exposes a lower level interface to use SSH Connections,
@@ -585,17 +589,6 @@ The inactive Driver could then cause a preemption and would be activated.
 The current caller of the originally active driver would be notified via an
 exception.
 
-Remote Target Reservation
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-For integration with CI systems (like Jenkins), it would help if the CI job
-could reserve and wait for a specific target.
-This could be done by managing a list of waiting users in the coordinator and
-notifying the current user on each invocation of labgrid-client that another
-user is waiting.
-The reservation should expire after some time if it is not used to lock the
-target after it becomes available.
-
 Step Tracing
 ~~~~~~~~~~~~
 
@@ -607,14 +600,6 @@ collect data over multiple runs for later analysis.
 This would become more useful by passing recognized events (stack traces,
 crashes, ...) and benchmark results via the Step infrastructure.
 
-Target Feature Flags
-~~~~~~~~~~~~~~~~~~~~
-
-It would be useful to support configuring feature flags in the target YAML
-definition.
-Then individual tests could be skipped if a required feature is unavailable on
-the current target without manually modifying the test suite.
-
 CommandProtocol Support for Background Processes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -623,23 +608,3 @@ processes well.
 An implementation should start a new process,
 return a handle and forbid running other processes in the foreground.
 The handle can be used to retrieve output from a command.
-
-SSH Tunneling for Remote Infrastructure
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Client and exporter require a direct HTTP(S) connection to the coordinator.
-Also, the clients connect directly to the exporters via SSH.
-However, often the clients are in an office network,
-while exporters run in separate lab networks,
-making it necessary to open holes in the firewall to
-connect to the coordinator or from client to exporter.
-In this case, it would be useful to use SSH as the authentication service
-and then use tunneling to connect to the coordinator or
-for the client to exporter connections.
-
-Support for PDU-Daemon
-~~~~~~~~~~~~~~~~~~~~~~
-
-The LAVA project developed their own daemon for power switching, the `PDU Daemon
-<https://https://staging.validation.linaro.org/static/docs/v2/pdudaemon.html>`_.
-Add support for the daemon in the NetworkPowerDriver.
