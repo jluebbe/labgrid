@@ -8,10 +8,11 @@ from ..resource.udev import AndroidFastboot
 from ..step import step
 from .common import Driver
 from ..util.managedfile import ManagedFile
+from ..util.helper import processwrapper
 
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class AndroidFastbootDriver(Driver):
     bindings = {
         "fastboot": {AndroidFastboot, NetworkAndroidFastboot},
@@ -40,6 +41,14 @@ class AndroidFastbootDriver(Driver):
 
         return prefix
 
+    @staticmethod
+    def _filter_fastboot_output(output, prefix='(bootloader) '):
+        """
+        Splits output by '\n' and returns only elements starting with prefix. The prefix is
+        removed.
+        """
+        return [line[len(prefix):] for line in output.split('\n') if line.startswith(prefix)]
+
     def on_activate(self):
         pass
 
@@ -49,7 +58,7 @@ class AndroidFastbootDriver(Driver):
     @Driver.check_active
     @step(title='call', args=['args'])
     def __call__(self, *args):
-        subprocess.check_call(self._get_fastboot_prefix() + list(args))
+        processwrapper.check_output(self._get_fastboot_prefix() + list(args))
 
     @Driver.check_active
     @step(args=['filename'])
@@ -74,3 +83,28 @@ class AndroidFastbootDriver(Driver):
     @step(title='continue')
     def continue_boot(self):
         self("continue")
+
+    @Driver.check_active
+    @step(args=['var'])
+    def getvar(self, var):
+        """Return variable value via 'fastboot getvar <var>'."""
+        if var == 'all':
+            raise NotImplementedError('Retrieving a list of all variables is not supported yet')
+
+        cmd = ['getvar', var]
+        output = processwrapper.check_output(self._get_fastboot_prefix() + cmd)
+        values = AndroidFastbootDriver._filter_fastboot_output(
+            output, '{}: '.format(var)
+        )
+        assert len(values) == 1, 'fastboot did not return exactly one line'
+        return values[0]
+
+    @Driver.check_active
+    @step(args=['var'])
+    def oem_getenv(self, var):
+        """Return barebox environment variable value via 'fastboot oem getenv <var>'."""
+        cmd = ['oem', 'getenv', var]
+        output = processwrapper.check_output(self._get_fastboot_prefix() + cmd)
+        values = AndroidFastbootDriver._filter_fastboot_output(output)
+        assert len(values) == 1, 'fastboot did not return exactly one line'
+        return values[0]

@@ -217,6 +217,9 @@ These components communicate over the `WAMP <http://wamp-proto.org/>`_
 implementation `Autobahn <http://autobahn.ws/>`_ and the `Crossbar
 <http://crossbar.io/>`_ WAMP router.
 
+The following sections describe the resposibilities of each component. See
+:ref:`remote-usage` for usage information.
+
 Coordinator
 ~~~~~~~~~~~
 
@@ -245,6 +248,10 @@ Each place can have aliases to simplify accessing a specific board (which might
 be moved between generic places).
 It also has a comment, which is used to store a short description of the
 connected board.
+
+To support selecting a specific place from a group containing similar or
+identical hardware, key-value tags can be added to places and used for
+scheduling.
 
 Finally, a place is configured with one or more `resource matches`.
 A resource match pattern has the format ``<exporter>/<group>/<class>``, where
@@ -335,3 +342,21 @@ file names refer to a shared filesystem (such as NFS or SMB).
 
   For exporters which are not directly accessible via SSH, add the host to your
   .ssh/config file, with a ProxyCommand when need.
+
+Proxy Mechanism
+~~~~~~~~~~~~~~~
+
+Both client and exporter support the proxy mechanism which uses SSH to tunnel
+connections to a remote host. To enable and force proxy mode on the exporter use
+the :code:`-i` or :code:`--isolated` command line option. This indicates to clients that all
+connections to remote resources made available by this exporter need to be
+tunneled using a SSH connection.
+On the other hand, clients may need to access the remote infrastrucure using a
+SSH tunnel. In this case the :code:`LG_PROXY` environment variable needs to be
+set to the remote host which should tunnel the connections. The client than
+forwards all network traffic through SSH, even the coordinator connection is
+forwarded. This means that with :code:`LG_PROXY` and :code:`LG_CROSSBAR` labgrid can be used
+fully remotely with only a SSH connection as a requirement.
+One remaining issue here is the forward of UDP connections, which is currently
+not possible. UDP connections are used by some of the power backends in the form
+of SNMP.

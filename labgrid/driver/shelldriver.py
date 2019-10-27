@@ -20,7 +20,7 @@ from .exception import ExecutionError
 
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
     """ShellDriver - Driver to execute commands on the shell
     ShellDriver binds on top of a ConsoleProtocol.
@@ -141,7 +141,8 @@ class ShellDriver(CommandMixin, Driver, CommandProtocol, FileTransferProtocol):
                 if index == 1:
                     if self.password:
                         self.console.sendline(self.password)
-                        self.console.expect(self.prompt, timeout=5)
+                        remaining_time = (start + self.login_timeout) - time.time()
+                        self.console.expect(self.prompt, timeout=remaining_time)
                     else:
                         raise Exception("Password entry needed but no password set")
                 self._check_prompt()

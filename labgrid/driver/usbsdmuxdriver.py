@@ -8,9 +8,10 @@ from ..resource.remote import NetworkUSBSDMuxDevice
 from ..resource.udev import USBSDMuxDevice
 from ..step import step
 from .exception import ExecutionError
+from ..util.helper import processwrapper
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class USBSDMuxDriver(Driver):
     """The USBSDMuxDriver uses the usbsdmux tool
     (https://github.com/pengutronix/usbsdmux) to control the USB-SD-Mux
@@ -41,4 +42,4 @@ class USBSDMuxDriver(Driver):
             self.mux.control_path,
             mode.lower()
         ]
-        subprocess.check_call(cmd)
+        processwrapper.check_output(cmd)

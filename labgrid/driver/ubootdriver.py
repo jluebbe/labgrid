@@ -15,7 +15,7 @@ from .commandmixin import CommandMixin
 
 
 @target_factory.reg_driver
-@attr.s(cmp=False)
+@attr.s(eq=False)
 class UBootDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
     """UBootDriver - Driver to control uboot via the console.
     UBootDriver binds on top of a ConsoleProtocol.
@@ -36,7 +36,7 @@ class UBootDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
     autoboot = attr.ib(default="stop autoboot", validator=attr.validators.instance_of(str))
     password = attr.ib(default="", validator=attr.validators.instance_of(str))
     interrupt = attr.ib(default="\n", validator=attr.validators.instance_of(str))
-    init_commands = attr.ib(default=attr.Factory(tuple), convert=tuple)
+    init_commands = attr.ib(default=attr.Factory(tuple), converter=tuple)
     password_prompt = attr.ib(default="enter Password:", validator=attr.validators.instance_of(str))
     boot_expression = attr.ib(default=r"U-Boot 20\d+", validator=attr.validators.instance_of(str))
     bootstring = attr.ib(default=r"Linux version \d", validator=attr.validators.instance_of(str))
@@ -95,17 +95,18 @@ class UBootDriver(CommandMixin, Driver, CommandProtocol, LinuxBootProtocol):
 
     @Driver.check_active
     @step(args=['cmd'], result=True)
-    def run(self, cmd, timeout=None): # pylint: disable=unused-argument
+    def run(self, cmd, timeout=30):
         """
         Runs the specified command on the shell and returns the output.
 
         Args:
             cmd (str): command to run on the shell
+            timeout (int): optional, how long to wait for completion
 
         Returns:
             Tuple[List[str],List[str], int]: if successful, None otherwise
         """
-        return self._run(cmd)
+        return self._run(cmd, timeout=timeout)
 
     def get_status(self):
         """Retrieve status of the UBootDriver.

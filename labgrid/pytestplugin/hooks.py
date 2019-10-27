@@ -1,18 +1,22 @@
 import logging
 import os
+import warnings
 import pytest
 
 from .. import Environment
 from ..consoleloggingreporter import ConsoleLoggingReporter
 from .reporter import StepReporter, ColoredStepReporter
+from ..util.helper import processwrapper
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
+    config.addinivalue_line("markers",
+                            "lg_feature: marker for labgrid feature flags")
     terminalreporter = config.pluginmanager.getplugin('terminalreporter')
     capturemanager = config.pluginmanager.getplugin('capturemanager')
     rewrite = True
     lg_log = config.option.lg_log
-    if capturemanager._method == "no":
+    if not capturemanager.is_globally_capturing():
         rewrite = False  # other output would interfere with our rewrites
     if terminalreporter.verbosity > 1:  # enable with -vv
         if config.option.lg_colored_steps:
@@ -29,10 +33,9 @@ def pytest_configure(config):
 
     if lg_env is None:
         if env_config is not None:
-            config.warn(
-                'LG-C1',
+            warnings.warn(pytest.PytestWarning(
                 "deprecated option --env-config (use --lg-env instead)",
-                __file__)
+                __file__))
             lg_env = env_config
 
     env = None
@@ -43,6 +46,8 @@ def pytest_configure(config):
         if lg_coordinator is not None:
             env.config.set_option('crossbar_url', lg_coordinator)
     config._labgrid_env = env
+
+    processwrapper.enable_logging()
 
 @pytest.hookimpl()
 def pytest_collection_modifyitems(config, items):
