@@ -15,7 +15,7 @@ class QMPMonitor:
     def _negotiate_capabilities(self):
         greeting = self._read_parse_json()
         if not greeting.get('QMP'):
-            raise IOError
+            raise QMPError("QMP greeting message invalid")
 
         self.monitor_in.write(json.dumps({"execute": "qmp_capabilities"}).encode("utf-8"))
         self.monitor_in.write("\n".encode("utf-8"))
@@ -28,6 +28,8 @@ class QMPMonitor:
     def _read_parse_json(self):
         line = self.monitor_out.readline().decode('utf-8')
         self.logger.debug("Received line: %s", line)
+        if not line:
+            raise QMPError("Received empty response")
         return json.loads(line)
 
     def execute(self, command):

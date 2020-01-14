@@ -1,5 +1,4 @@
 import shlex
-import subprocess
 import time
 from importlib import import_module
 
@@ -118,7 +117,9 @@ class NetworkPowerDriver(Driver, PowerResetMixin, PowerProtocol):
         # we can only forward if the backend knows which port to use
         backend_port = getattr(self.backend, 'PORT', None)
         if backend_port:
-            self._host, self._port = proxymanager.get_host_and_port(self.port, force_port=backend_port)
+            self._host, self._port = proxymanager.get_host_and_port(
+                self.port, force_port=backend_port
+            )
         else:
             self._host = self.port.host
             self._port = None
@@ -192,7 +193,7 @@ class YKUSHPowerDriver(Driver, PowerResetMixin, PowerProtocol):
         super().__attrs_post_init__()
         # uses the YKUSH pykush interface from here:
         # https://github.com/Yepkit/pykush
-        self.pykush_mod = import_module('pykush')
+        self.pykush_mod = import_module('pykush.pykush')
         self.pykush = self.pykush_mod.YKUSH(serial=self.port.serial)
 
     @Driver.check_active

@@ -8,7 +8,7 @@ import attr
 from .binding import BindingError, BindingState
 from .driver import Driver
 from .exceptions import NoSupplierFoundError, NoDriverFoundError, NoResourceFoundError
-from .resource import Resource, ManagedResource
+from .resource import Resource
 from .strategy import Strategy
 from .util import Timeout
 
@@ -44,10 +44,8 @@ class Target:
         if (monotonic() - self.last_update) < 0.1:
             return
         self.last_update = monotonic()
-        resources = [r for r in self.resources if isinstance(r, ManagedResource)]
-        for resource in resources:
+        for resource in self.resources:
             resource.poll()
-        for resource in resources:
             if not resource.avail and resource.state is BindingState.active:
                 self.log.info("deactivating unavailable resource %s", resource.display_name)  # pylint: disable=line-too-long
                 self.deactivate(resource)
@@ -123,10 +121,10 @@ class Target:
                     "all resources matching {} found in target {} have other names: {}".format(
                         cls, self, other_names)
                 )
-            else:
-                raise NoResourceFoundError(
-                    "no resource matching {} found in target {}".format(cls, self)
-                )
+
+            raise NoResourceFoundError(
+                "no resource matching {} found in target {}".format(cls, self)
+            )
         elif len(found) > 1:
             raise NoResourceFoundError(
                 "multiple resources matching {} found in target {}".format(cls, self)
@@ -159,12 +157,12 @@ class Target:
                         "active " if active else "",
                         cls, self, other_names)
                 )
-            else:
-                raise NoDriverFoundError(
-                    "no {}driver matching {} found in target {}".format(
-                        "active " if active else "", cls, self
-                    )
+
+            raise NoDriverFoundError(
+                "no {}driver matching {} found in target {}".format(
+                    "active " if active else "", cls, self
                 )
+            )
         elif len(found) > 1:
             prio_last = -255
             prio_found = []
@@ -463,4 +461,4 @@ class Target:
         try:
             return self._lookup_table[string]
         except KeyError:
-            raise KeyError("No driver/resource/protocol of type '{}' in lookup table, perhaps not bound?".format(string))
+            raise KeyError("No driver/resource/protocol of type '{}' in lookup table, perhaps not bound?".format(string))  # pylint: disable=line-too-long
