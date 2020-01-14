@@ -46,6 +46,11 @@ class Resource(BindingMixin):
         """
         return self._parent.get_managed_parent() if self._parent else None
 
+    def poll(self):
+        managed_parent = self.get_managed_parent()
+        if managed_parent:
+            managed_parent.poll()
+
 
 @attr.s(eq=False)
 class NetworkResource(Resource):
@@ -65,7 +70,7 @@ class NetworkResource(Resource):
         host = self.host
 
         if hasattr(self, 'extra'):
-            if self.extra.get('proxy_required'): 
+            if self.extra.get('proxy_required'):
                 host = self.extra.get('proxy')
 
         conn = sshmanager.get(host)

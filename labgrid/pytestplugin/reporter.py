@@ -75,7 +75,8 @@ class StepReporter:
 
     def _line_format(self, event):
         indent = '  '*event.step.level
-        line = [indent, colors.color(event.step.title, style='bold')]
+        title = '{}.{}'.format(event.step.source.__class__.__name__, event.step.title)
+        line = [indent, colors.color(title, style='bold')]
         if event.resource:
             line.append(event.resource)
         line.extend(self.__format_elements())
@@ -130,8 +131,8 @@ class ColoredStepReporter(StepReporter):
         for pattern, color in self.color_scheme.items():
             if re.match(pattern, event.step.title):
                 return color
-        else:
-            return 'default'
+
+        return 'default'
 
     def __format_elements(self, color):
         return [
@@ -143,7 +144,8 @@ class ColoredStepReporter(StepReporter):
     def _line_format(self, event):
         indent = '  '*event.step.level
         color = self.__event_color(event)
-        line = [indent, colors.color(event.step.title, fg=color, style='bold')]
+        title = '{}.{}'.format(event.step.source.__class__.__name__, event.step.title)
+        line = [indent, colors.color(title, fg=color, style='bold')]
         if event.resource:
             line.append(event.resource)
         line.extend(self.__format_elements(color))

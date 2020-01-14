@@ -1,7 +1,6 @@
 """The coordinator module coordinates exported resources and clients accessing them."""
 # pylint: disable=no-member,unused-argument
 import asyncio
-import enum
 import traceback
 from collections import defaultdict
 from os import environ
@@ -59,9 +58,9 @@ class ExporterSession(RemoteSession):
             new = old
         elif resourcedata and not old:
             new = group[resourcename] = ResourceImport(
-                    resourcedata,
-                    path=(self.name, groupname, resourcedata['cls'], resourcename),
-                    )
+                resourcedata,
+                path=(self.name, groupname, resourcedata['cls'], resourcename)
+            )
         elif not resourcedata and old:
             new = None
             del group[resourcename]
@@ -256,7 +255,10 @@ class CoordinatorComponent(ApplicationSession):
                 done, _ = await asyncio.wait([fut], timeout=5)
                 if not done:
                     print('kicking exporter ({}/{})'.format(session.key, session.name))
+                    await self.call('wamp.session.kill', session.key, message="timeout detected by coordinator")
+                    print('cleaning up exporter ({}/{})'.format(session.key, session.name))
                     await self.on_session_leave(session.key)
+                    print('removed exporter ({}/{})'.format(session.key, session.name))
                     continue
                 try:
                     session.version = done.pop().result()
@@ -265,6 +267,8 @@ class CoordinatorComponent(ApplicationSession):
                         pass # old client
                     elif e.error == "wamp.error.canceled":
                         pass # disconnected
+                    elif e.error == "wamp.error.no_such_session":
+                        pass # client has already disconnected
                     else:
                         raise
         # update reservations
@@ -329,14 +333,14 @@ class CoordinatorComponent(ApplicationSession):
         place.matches.append(ResourceMatch(exporter="*", group=name, cls="*"))
         self.places[name] = place
 
-    async def _update_acquired_places(self, action, resource):
+    async def _update_acquired_places(self, action, resource, callback=True):
         """Update acquired places when resources are added or removed."""
         if action not in [Action.ADD, Action.DEL]:
             return  # currently nothing needed for Action.UPD
 
         # collect affected places
         places = []
-        for placename, place in self.places.items():
+        for place in self.places.values():
             if not place.acquired:
                 continue
             if not place.hasmatch(resource.path):
@@ -352,7 +356,7 @@ class CoordinatorComponent(ApplicationSession):
             self._publish_place(place)
         else:
             for place in places:
-                await self._release_resources(place, [resource])
+                await self._release_resources(place, [resource], callback=callback)
                 self._publish_place(place)
 
     def _publish_place(self, place):
@@ -394,7 +398,7 @@ class CoordinatorComponent(ApplicationSession):
             for groupname, group in session.groups.items():
                 for resourcename in group.copy():
                     action, resource = session.set_resource(groupname, resourcename, {})
-                    await self._update_acquired_places(action, resource)  # pylint: disable=not-an-iterable
+                    await self._update_acquired_places(action, resource, callback=False)  # pylint: disable=not-an-iterable
         self.save_later()
 
     @locked
@@ -575,7 +579,7 @@ class CoordinatorComponent(ApplicationSession):
                 # this triggers an update from the exporter which is published
                 # to the clients
                 await self.call('org.labgrid.exporter.{}.acquire'.format(resource.path[0]),
-                        resource.path[1], resource.path[3], place.name)
+                                resource.path[1], resource.path[3], place.name)
                 acquired.append(resource)
         except:
             print("failed to acquire {}".format(resource))
@@ -588,11 +592,7 @@ class CoordinatorComponent(ApplicationSession):
 
         return True
 
-    @locked
-    async def acquire_resources(self, place, resources):
-        return await self._acquire_resources(place, resources)
-
-    async def _release_resources(self, place, resources):
+    async def _release_resources(self, place, resources, callback=True):
         resources = resources.copy() # we may modify the list
 
         for resource in resources:
@@ -605,8 +605,9 @@ class CoordinatorComponent(ApplicationSession):
             try:
                 # this triggers an update from the exporter which is published
                 # to the clients
-                await self.call('org.labgrid.exporter.{}.release'.format(resource.path[0]),
-                        resource.path[1], resource.path[3])
+                if callback:
+                    await self.call('org.labgrid.exporter.{}.release'.format(resource.path[0]),
+                                    resource.path[1], resource.path[3])
             except:
                 print("failed to release {}".format(resource))
                 # at leaset try to notify the clients
@@ -614,10 +615,6 @@ class CoordinatorComponent(ApplicationSession):
                     self._publish_resource(resource)
                 except:
                     pass
-
-    @locked
-    async def release_resources(self, place, resources):
-        return await self._release_resources(place, resources)
 
     @locked
     async def acquire_place(self, name, details=None):
@@ -729,7 +726,7 @@ class CoordinatorComponent(ApplicationSession):
                         res.state = ReservationState.invalid
                         res.allocations.clear()
                         res.refresh(300)
-                        print('reservation ({}/{}) is now {}'.format(res.owner, res.token, res.state.name))
+                        print('reservation ({}/{}) is now {}'.format(res.owner, res.token, res.state.name))  # pylint: disable=line-too-long
                     if place.acquired is not None:
                         acquired_places.add(name)
                     assert name not in allocated_places, "conflicting allocation"
@@ -804,7 +801,7 @@ class CoordinatorComponent(ApplicationSession):
 
     @locked
     async def create_reservation(self, spec, prio=0.0, details=None):
-        filter = {}
+        filter_ = {}
         for pair in spec.split():
             try:
                 k, v = pair.split('=')
@@ -814,9 +811,9 @@ class CoordinatorComponent(ApplicationSession):
                 return None
             if not TAG_VAL.match(v):
                 return None
-            filter[k] = v
+            filter_[k] = v
 
-        filters = {'main': filter} # currently, only one group is implemented
+        filters = {'main': filter_} # currently, only one group is implemented
 
         owner = self.sessions[details.caller].name
         res = Reservation(owner=owner, prio=prio, filters=filters)
