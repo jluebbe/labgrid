@@ -515,3 +515,15 @@ class DeditecRelais8(USBResource):
             return self.device.device_path
 
         return None
+
+@target_factory.reg_resource
+@attr.s(eq=False)
+class LXAUSBMux(USBResource):
+    """The LXAUSBMux describes an attached USBMux device,
+    it is identified via USB using udev.
+    """
+
+    def __attrs_post_init__(self):
+        self.match['ID_VENDOR_ID'] = '5824'  # FIXME
+        self.match['ID_MODEL_ID'] = '27dd'  # FIXME
+        super().__attrs_post_init__()

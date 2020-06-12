@@ -394,6 +394,7 @@ exports["USBVideo"] = USBGenericExport
 exports["USBTMC"] = USBGenericExport
 exports["USBPowerPort"] = USBPowerPortExport
 exports["DeditecRelais8"] = USBDeditecRelaisExport
+exports["LXAUSBMux"] = USBGenericExport
 
 
 @attr.s
