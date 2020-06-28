@@ -2,6 +2,6 @@
 setuptools>=38.0.0
 crossbar==19.11.1
 # For crossbar
-idna==2.5
+idna==2.10
 msgpack==0.6.2
 urllib3==1.24.3
