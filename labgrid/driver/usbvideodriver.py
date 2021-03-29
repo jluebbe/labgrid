@@ -27,6 +27,12 @@ class USBVideoDriver(Driver):
                 ("mid", "image/jpeg,width=1280,height=720,framerate=15/2"),
                 ("high", "image/jpeg,width=1920,height=1080,framerate=10/1"),
                 ])
+        if match == (0x534d, 0x2109):
+            return ("mid", [
+                ("low", "image/jpeg,width=720,height=480,framerate=10/1"),
+                ("mid", "image/jpeg,width=1280,height=720,framerate=10/1"),
+                ("high", "image/jpeg,width=1920,height=1080,framerate=10/1"),
+                ])
         raise InvalidConfigError("Unkown USB video device {:04x}:{:04x}".format(*match))
 
     def select_caps(self, hint=None):
@@ -44,6 +50,8 @@ class USBVideoDriver(Driver):
             return "v4l2src device={} ! {} ! h264parse ! fdsink"
         if match == (0x046d, 0x0892):
             return "v4l2src device={} ! {} ! decodebin ! vaapipostproc ! vaapih264enc ! h264parse ! fdsink"  # pylint: disable=line-too-long
+        if match == (0x534d, 0x2109):
+            return "v4l2src device={} ! {} ! fdsink"  # pylint: disable=line-too-long
         raise InvalidConfigError("Unkown USB video device {:04x}:{:04x}".format(*match))
 
     @Driver.check_active
@@ -54,7 +62,8 @@ class USBVideoDriver(Driver):
         tx_cmd = self.video.command_prefix + ["gst-launch-1.0", "-q"]
         tx_cmd += pipeline.format(self.video.path, caps).split()
         rx_cmd = ["gst-launch-1.0"]
-        rx_cmd += "fdsrc ! h264parse ! avdec_h264 ! glimagesink sync=false".split()
+        #rx_cmd += "fdsrc ! h264parse ! avdec_h264 ! glimagesink sync=false".split()
+        rx_cmd += "fdsrc ! jpegparse ! jpegdec ! glimagesink sync=false".split()
 
         tx = subprocess.Popen(
             tx_cmd,
