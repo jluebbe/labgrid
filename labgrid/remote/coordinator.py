@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import logging
+import os
 import asyncio
 import itertools
 import inspect
@@ -865,7 +867,7 @@ class Coordinator(labgrid_coordinator_pb2_grpc.LabgridServicer):
         return res.as_pb2()
 
 
-async def serve(cleanup) -> None:
+async def serve(listen, cleanup) -> None:
     server = grpc.aio.server(
         options=[
             ('grpc.keepalive_time_ms', 30000),  # Send keepalive ping every 30 seconds
@@ -875,12 +877,11 @@ async def serve(cleanup) -> None:
             ('grpc.keepalive_permit_without_calls', 1),  # Allow keepalive pings even when there are no calls
         ],
     )
-    logging.debug("Created dummy labgrid coordinator")
     coordinator = Coordinator()
     labgrid_coordinator_pb2_grpc.add_LabgridServicer_to_server(
         coordinator, server
     )
-    server.add_insecure_port("[::]:20408")
+    server.add_insecure_port(listen)
     logging.debug("Starting server")
     await server.start()
     logging.debug("Coordinator ready")
@@ -894,12 +895,32 @@ async def serve(cleanup) -> None:
     await server.wait_for_termination()
 
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-l',
+        '--listen',
+        metavar='HOST:PORT',
+        type=str,
+        default=os.environ.get("LG_COORDINATOR", "[::]:20408"),
+        help="coordinator listening host and port"
+    )
+    parser.add_argument(
+        '-d',
+        '--debug',
+        action='store_true',
+        default=False,
+        help="enable debug mode"
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+
     loop = asyncio.get_event_loop()
     cleanup = []
     loop.set_debug(True)
     try:
-        loop.run_until_complete(serve(cleanup))
+        loop.run_until_complete(serve(args.listen, cleanup))
     finally:
         loop.run_until_complete(*cleanup)
 
