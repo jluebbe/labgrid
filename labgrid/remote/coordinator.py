@@ -104,9 +104,22 @@ class ClientSession(RemoteSession):
             self.queue.put_nowait(out_msg)
 
     def subscribe_resources(self):
-        pass
-        # FIXME
-        #self.queue.put_nowait(out_msg)
+        # send resources places
+        logging.info(f"sending resources to {self}")
+        for exporter in self.coordinator.exporters.values():
+            logging.info(f"sending resources {exporter}")
+            exporter: ExporterSession
+            for groupname, group in exporter.groups.items():
+                logging.info(f"sending resources {groupname}")
+                for resourcename, resource in group.items():
+                    logging.info(f"sending resources {resourcename}")
+                    resource: ResourceImport
+                    out_msg = labgrid_coordinator_pb2.ClientOutMessage()
+                    out_msg.update.resource.CopyFrom(resource.as_pb2())
+                    out_msg.update.resource.path.exporter_name = self.name
+                    out_msg.update.resource.path.group_name = groupname
+                    out_msg.update.resource.path.resource_name = resourcename
+                    self.queue.put_nowait(out_msg)
 
 
 def locked(func):
