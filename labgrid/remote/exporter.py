@@ -24,9 +24,9 @@ from .generated import labgrid_coordinator_pb2, labgrid_coordinator_pb2_grpc
 from ..util import get_free_port, labgrid_version
 
 
-__version__ = labgrid_version()
 exports: Dict[str, Type[ResourceEntry]] = {}
 reexec = False
+
 
 class ExporterError(Exception):
     pass
@@ -750,7 +750,7 @@ class Exporter:
 
         self.groups = {}
 
-    async def start(self) -> None:
+    async def run(self) -> None:
         self.pump_task = self.loop.create_task(self.message_pump())
         self.send_started()
 
@@ -782,41 +782,30 @@ class Exporter:
         logging.info("creating poll task")
         self.poll_task = self.loop.create_task(self.poll())
 
-    async def shutdown(self):
-        logging.debug("Shutting down")
-        self.out_queue.put_nowait(None)
+        (done, pending) = await asyncio.wait((self.pump_task, self.poll_task), return_when=asyncio.FIRST_COMPLETED)
+        logging.debug("task(s) %s exited, shutting down exporter", done)
+        for task in pending:
+            task.cancel()
+
         await self.pump_task
-        logging.debug("Message pump stopped")
+        await self.poll_task
 
     def send_started(self):
         msg = labgrid_coordinator_pb2.ExporterInMessage()
-        msg.startup.version = __version__
+        msg.startup.version = labgrid_version()
         msg.startup.name = self.name
         self.out_queue.put_nowait(msg)
 
-    async def onLeave(self, details):
-        """Cleanup after leaving the coordinator connection"""
-        if self.poll_task:
-            self.poll_task.cancel()
-            await asyncio.wait([self.poll_task])
-        super().onLeave(details)
-
-    async def onDisconnect(self):
-        print("connection lost", file=sys.stderr)
-        global reexec
-        reexec = True
-        if self.poll_task:
-            self.poll_task.cancel()
-            await asyncio.wait([self.poll_task])
-            await asyncio.sleep(0.5) # give others a chance to clean up
-        self.loop.stop()
-
     async def message_pump(self):
+        got_message = False
         try:
             async for out_message in self.stub.ExporterStream(queue_as_aiter(self.out_queue)):
+                got_message = True
                 logging.debug(f"out_message {out_message}")
                 kind = out_message.WhichOneof("kind")
-                if kind == "request":
+                if kind == "hello":
+                    logging.info("connected to exporter version %s", out_message.hello.version)
+                elif kind == "request":
                     logging.debug(f"aquire request")
                     if out_message.request.place_name:
                         await self.acquire(
@@ -839,7 +828,19 @@ class Exporter:
                     logging.debug(f"queued {in_message}")
                 else:
                     logging.debug(f"unknown request: {kind}")
+        except grpc.aio.AioRpcError as e:
+            self.out_queue.put_nowait(None)  # let the sender side exit gracefully
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                if got_message:
+                    logging.error("coordinator became unavailable: %s", e.details())
+                    global reexec
+                    reexec = True
+                else:
+                    logging.error("coordinator is unavailable: %s", e.details())
+            else:
+                logging.exception("unexpected grpc error in coordinator message pump task")
         except Exception:
+            self.out_queue.put_nowait(None)  # let the sender side exit gracefully
             logging.exception("error in coordinator message pump")
 
             # only send command response when the other updates have left the queue
@@ -940,15 +941,7 @@ class Exporter:
 
 async def amain(config) -> bool:
     exporter = Exporter(config)
-    await exporter.start()
-    logging.debug("Started")
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        await exporter.shutdown()
-
-    # FIXME return rexec flag
+    await exporter.run()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1018,7 +1011,7 @@ def main():
     print(f"exporter hostname: {config['hostname']}")
     print(f"resource config file: {config['resources']}")
 
-    reexec = asyncio.run(amain(config), debug=bool(args.debug))
+    asyncio.run(amain(config), debug=bool(args.debug))
 
     if reexec:
         exit(100)
