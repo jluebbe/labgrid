@@ -75,6 +75,8 @@ class ClientSession:
 
     def __attrs_post_init__(self):
         """Actions which are executed if a connection is successfully opened."""
+        self.failed = asyncio.Event()
+
         self.channel = grpc.aio.insecure_channel(self.url)
         self.stub = labgrid_coordinator_pb2_grpc.LabgridStub(self.channel)
 
@@ -99,6 +101,8 @@ class ClientSession:
         msg.subscribe.all_resources = True
         self.out_queue.put_nowait(msg)
         await self.sync_with_coordinator()
+        if self.failed.is_set():
+            raise ServerError("failed to connect to coordinator")
 
     async def sync_with_coordinator(self):
         id = next(self.sync_id)
@@ -108,11 +112,27 @@ class ClientSession:
         logging.info("sending sync %s", id)
         self.out_queue.put_nowait(msg)
         await event.wait()
-        logging.info("received sync %s", id)
+        if self.failed.is_set():
+            logging.info("sync %s failed", id)
+        else:
+            logging.info("received sync %s", id)
+        return not self.failed.is_set()
+
+    def cancel_pending_syncs(self):
+        assert self.failed.is_set()  # only call when something has gone wrong
+        while True:
+            try:
+                id, event = self.sync_events.popitem()
+                logging.debug(f"cancelling {id} {event}")
+                event.set()
+            except KeyError:
+                break
 
     async def message_pump(self):
+        got_message = False
         try:
             async for out_msg in self.stub.ClientStream(queue_as_aiter(self.out_queue)):
+                got_message = True
                 logging.debug(f"out_msg from coordinator: {out_msg}")
                 kind = out_msg.WhichOneof("kind")
                 if kind == "sync":
@@ -146,8 +166,20 @@ class ClientSession:
                         logging.debug(f"unknown update from coordinator: {update_kind}")
                 else:
                     logging.debug(f"unknown message from coordinator: {kind}")
+        except grpc.aio.AioRpcError as e:
+            self.failed.set()
+            self.out_queue.put_nowait(None)  # let the sender side exit gracefully
+            self.cancel_pending_syncs()
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                if got_message:
+                    logging.error("coordinator became unavailable: %s", e.details())
+                else:
+                    logging.error("coordinator is unavailable: %s", e.details())
+            else:
+                logging.exception("unexpected grpc error in coordinator message pump task")
         except Exception:
-            logging.exception("error in coordinator message pump")
+            self.failed.set()
+            logging.exception("error in coordinator message pump task")
 
     async def on_resource_changed(self, exporter, group_name, resource_name, resource):
         group = self.resources.setdefault(exporter,
@@ -195,8 +227,7 @@ class ClientSession:
 
     async def do_monitor(self):
         self.monitor = True
-        while True:
-            await asyncio.sleep(3600.0)
+        await self.failed.wait()
 
     async def complete(self):
         if self.args.type == 'resources':
@@ -1434,7 +1465,7 @@ class ClientSession:
         print(labgrid_version())
 
 
-def start_session(url, realm, extra):
+def start_session(url, extra):
     loop = asyncio.get_event_loop()
     session = None
 
@@ -1525,10 +1556,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '-x',
-        '--crossbar',
+        '--coordinator',
         metavar='URL',
         type=str,
-        help="crossbar websocket URL (default: value from env variable LG_CROSSBAR, otherwise ws://127.0.0.1:20408/ws)"
+        help="coordinator URL (default: value from env variable LG_COORDINATOR, otherwise 127.0.0.1:20408)"
     )
     parser.add_argument(
         '-c',
@@ -1974,21 +2005,15 @@ def main():
             signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
             try:
-                crossbar_url = args.crossbar or env.config.get_option('crossbar_url')
+                coordinator_url = args.coordinator or env.config.get_option('')
             except (AttributeError, KeyError):
-                # in case of no env or not set, use LG_CROSSBAR env variable or default
-                crossbar_url = os.environ.get("LG_CROSSBAR", "127.0.0.1:20408")
+                # in case of no env or not set, use LG_COORDINATOR env variable or default
+                coordinator_url = os.environ.get("LG_COORDINATOR", "127.0.0.1:20408")
 
-            try:
-                crossbar_realm = env.config.get_option('crossbar_realm')
-            except (AttributeError, KeyError):
-                # in case of no env, use LG_CROSSBAR_REALM env variable or default
-                crossbar_realm = os.environ.get("LG_CROSSBAR_REALM", "realm1")
+            logging.debug('Starting session with "%s"', coordinator_url)
+            session = start_session(coordinator_url, extra)
+            logging.debug('Started session')
 
-            logging.debug('Starting session with "%s", realm: "%s"', crossbar_url,
-                    crossbar_realm)
-
-            session = start_session(crossbar_url, crossbar_realm, extra)
             try:
                 if asyncio.iscoroutinefunction(args.func):
                     if getattr(args.func, 'needs_target', False):
@@ -2021,10 +2046,8 @@ def main():
                 print("This is likely caused by an error in the environment configuration or invalid\nresource information provided by the coordinator.", file=sys.stderr)  # pylint: disable=line-too-long
 
             exitcode = 1
-        except grpc.aio.AioRpcError as e:
-            if e.code() != grpc.StatusCode.UNAVAILABLE:
-                raise
-            print(f"Could not connect to coordinator: {e.details()}", file=sys.stderr)
+        except ServerError as e:
+            print(f"Server error: {e}", file=sys.stderr)
             exitcode = 1
         except InteractiveCommandError as e:
             if args.debug:
