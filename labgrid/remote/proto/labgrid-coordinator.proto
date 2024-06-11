@@ -119,9 +119,14 @@ message ExporterResponse {
   uint64 status = 1;
 };
 
+message Hello {
+  string version = 1;
+}
+
 message ExporterOutMessage {
   oneof kind {
-    ExporterSetAquiredRequest request = 1;
+    Hello hello = 1;
+    ExporterSetAquiredRequest request = 2;
   };
 };
 

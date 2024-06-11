@@ -11,7 +11,7 @@ import grpc
 
 from .common import ResourceEntry, ResourceMatch, Place, Reservation, ReservationState, queue_as_aiter, TAG_KEY, TAG_VAL
 from .scheduler import TagSet, schedule
-from ..util import atomic_replace, yaml
+from ..util import atomic_replace, labgrid_version, yaml
 
 from .generated import labgrid_coordinator_pb2
 from .generated import labgrid_coordinator_pb2_grpc
@@ -590,6 +590,10 @@ class Coordinator(labgrid_coordinator_pb2_grpc.LabgridServicer):
         assert peer not in self.exporters
         command_queue = asyncio.Queue()
         pending_commands = []
+
+        out_msg = labgrid_coordinator_pb2.ExporterOutMessage()
+        out_msg.hello.version = labgrid_version()
+        yield out_msg
 
         async def request_task():
             name = None

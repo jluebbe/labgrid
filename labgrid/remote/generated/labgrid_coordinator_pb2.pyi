@@ -128,11 +128,19 @@ class ExporterResponse(_message.Message):
     status: int
     def __init__(self, status: _Optional[int] = ...) -> None: ...
 
+class Hello(_message.Message):
+    __slots__ = ("version",)
+    VERSION_FIELD_NUMBER: _ClassVar[int]
+    version: str
+    def __init__(self, version: _Optional[str] = ...) -> None: ...
+
 class ExporterOutMessage(_message.Message):
-    __slots__ = ("request",)
+    __slots__ = ("hello", "request")
+    HELLO_FIELD_NUMBER: _ClassVar[int]
     REQUEST_FIELD_NUMBER: _ClassVar[int]
+    hello: Hello
     request: ExporterSetAquiredRequest
-    def __init__(self, request: _Optional[_Union[ExporterSetAquiredRequest, _Mapping]] = ...) -> None: ...
+    def __init__(self, hello: _Optional[_Union[Hello, _Mapping]] = ..., request: _Optional[_Union[ExporterSetAquiredRequest, _Mapping]] = ...) -> None: ...
 
 class ExporterSetAquiredRequest(_message.Message):
     __slots__ = ("group_name", "resource_name", "place_name")
