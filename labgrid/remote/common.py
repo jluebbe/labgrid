@@ -4,8 +4,11 @@ import enum
 import random
 import re
 import string
+import logging
 from datetime import datetime
 from fnmatch import fnmatchcase
+
+from .generated import labgrid_coordinator_pb2
 
 import attr
 
@@ -17,12 +20,37 @@ __all__ = [
     'Place',
     'ReservationState',
     'Reservation',
-    'enable_tcp_nodelay',
-    'monkey_patch_max_msg_payload_size_ws_option',
 ]
 
 TAG_KEY = re.compile(r"[a-z][a-z0-9_]+")
 TAG_VAL = re.compile(r"[a-z0-9_]?")
+
+def set_map_from_dict(m, d):
+    for k, v in d.items():
+        assert isinstance(k, str)
+        if v is None:
+            pass
+        elif isinstance(v, bool):
+            m[k].bool_value = v
+        elif isinstance(v, int):
+            if v < 0:
+                m[k].int_value = v
+            else:
+                m[k].uint_value = v
+        elif isinstance(v, float):
+            m[k].float_value = v
+        elif isinstance(v, str):
+            m[k].string_value = v
+        else:
+            raise ValueError(f"cannot translate {repr(v)} to MapValue")
+
+def build_dict_from_map(m):
+    d = {}
+    for k, v in m.items():
+        v: labgrid_coordinator_pb2.MapValue
+        kind = v.WhichOneof('kind')
+        d[k] = getattr(v, kind)
+    return d
 
 
 @attr.s(eq=False)
@@ -30,6 +58,7 @@ class ResourceEntry:
     data = attr.ib()  # cls, params
 
     def __attrs_post_init__(self):
+        assert isinstance(self.data, dict)
         self.data.setdefault('acquired', None)
         self.data.setdefault('avail', False)
 
@@ -84,6 +113,35 @@ class ResourceEntry:
         # ignore repeated releases
         self.data['acquired'] = None
 
+    def as_pb2(self):
+        msg = labgrid_coordinator_pb2.Resource()
+        msg.cls = self.cls
+        params = self.params.copy()
+        extra = params.pop('extra', {})
+        set_map_from_dict(msg.params, params)
+        set_map_from_dict(msg.extra, extra)
+        if self.acquired is not None:
+            msg.acquired = self.acquired
+        msg.avail = self.avail
+        return msg
+
+    @staticmethod
+    def data_from_pb2(pb2):
+        assert isinstance(pb2, labgrid_coordinator_pb2.Resource)
+        data = {
+            'cls': pb2.cls,
+            'params': build_dict_from_map(pb2.params),
+            'acquired': pb2.acquired,
+            'avail': pb2.avail,
+        }
+        data['params']['extra'] = build_dict_from_map(pb2.extra)
+        return data
+
+    @classmethod
+    def from_pb2(cls, pb2):
+        assert isinstance(pb2, labgrid_coordinator_pb2.Place)
+        return cls(cls.data_from_pb2(pb2))
+
 
 @attr.s(eq=True, repr=False, str=False)
 # This class requires eq=True, since we put the matches into a list and require
@@ -135,6 +193,27 @@ class ResourceMatch:
 
         return True
 
+    def as_pb2(self):
+        return labgrid_coordinator_pb2.ResourceMatch(
+            exporter = self.exporter,
+            group = self.group,
+            cls = self.cls,
+            name = self.name,
+            rename = self.rename,
+        )
+
+    @classmethod
+    def from_pb2(cls, pb2):
+        assert isinstance(pb2, labgrid_coordinator_pb2.ResourceMatch)
+        return cls(
+            exporter = pb2.exporter,
+            group = pb2.group,
+            cls = pb2.cls,
+            name = pb2.name if pb2.HasField("name") else None,
+            rename = pb2.rename,
+        )
+
+
 
 @attr.s(eq=False)
 class Place:
@@ -172,13 +251,19 @@ class Place:
             'reservation': self.reservation,
         }
 
-    def update(self, config):
+    def update_from_pb2(self, place_pb2):
+        # FIXME untangle this...
+        place = Place.from_pb2(place_pb2)
         fields = attr.fields_dict(type(self))
-        for k, v in config.items():
+        for k, v in place.asdict().items():
+            print(f"{k}: {v}")
             assert k in fields
             if k == 'name':
                 # we cannot rename places
                 assert v == self.name
+                continue
+            if k == 'matches':
+                self.matches = [ResourceMatch.from_pb2(m) for m in place_pb2.matches]
                 continue
             setattr(self, k, v)
 
@@ -240,9 +325,42 @@ class Place:
             if not any([match.ismatch(resource) for resource in resource_paths]):
                 return match
 
-
     def touch(self):
         self.changed = time.time()
+
+    def as_pb2(self):
+        place = labgrid_coordinator_pb2.Place(
+            name = self.name,
+            aliases = self.aliases,
+            comment = self.comment,
+            matches = [m.as_pb2() for m in self.matches],
+            acquired = self.acquired,
+            acquired_resources = self.acquired_resources,
+            allowed = self.allowed,
+            changed = self.changed,
+            created = self.created,
+            reservation = self.reservation,
+        )
+        for key, value in self.tags.items():
+            place.tags[key] = value
+        return place
+
+    @classmethod
+    def from_pb2(cls, pb2):
+        assert isinstance(pb2, labgrid_coordinator_pb2.Place)
+        return cls(
+            name = pb2.name,
+            aliases = pb2.aliases,
+            comment = pb2.comment,
+            tags = dict(pb2.tags),
+            matches = [ResourceMatch.from_pb2(m) for m in pb2.matches],
+            acquired = pb2.acquired if pb2.HasField("acquired") else None,
+            acquired_resources = pb2.acquired_resources,
+            allowed = pb2.allowed,
+            created = pb2.created,
+            changed = pb2.changed,
+            reservation = pb2.reservation if pb2.HasField("reservation") else None,
+        )
 
 
 class ReservationState(enum.Enum):
@@ -305,44 +423,41 @@ class Reservation:
         print(indent + f"created: {datetime.fromtimestamp(self.created)}")
         print(indent + f"timeout: {datetime.fromtimestamp(self.timeout)}")
 
+    def as_pb2(self):
+        res = labgrid_coordinator_pb2.Reservation()
+        res.owner = self.owner
+        res.token = self.token
+        res.state = self.state.value
+        res.prio = self.prio
+        res.filters.extend(self.filters)
+        res.allocations = self.allocations
+        res.created = self.created
+        res.timeout = self.timeout
 
-def enable_tcp_nodelay(session):
-    """
-    asyncio/autobahn does not set TCP_NODELAY by default, so we need to do it
-    like this for now.
-    """
-    s = session._transport.transport.get_extra_info('socket')
-    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+    @classmethod
+    def from_pb2(cls, pb2):
+        return cls(
+            owner = pb2.owner,
+            token = pb2.token,
+            state = ReservationState(pb2.state),
+            prio = pb2.prio,
+            filters = dict(pb2.filters),
+            allocations = dict(pb2.allocations),
+            created = pb2.created,
+            timeout = pb2.timeout,
+        )
 
 
-def monkey_patch_max_msg_payload_size_ws_option():
-    """
-    The default maxMessagePayloadSize in autobahn is 1M. For larger setups with a big number of
-    exported resources, this becomes the limiting factor.
-    Increase maxMessagePayloadSize in WampWebSocketClientFactory.setProtocolOptions() by monkey
-    patching it, so autobahn.asyncio.wamp.ApplicationRunner effectively sets the increased value.
-
-    This function must be called before ApplicationRunner is instanciated.
-    """
-    from autobahn.asyncio.websocket import WampWebSocketClientFactory
-
-    original_method = WampWebSocketClientFactory.setProtocolOptions
-
-    def set_protocol_options(*args, **kwargs):
-        new_max_message_payload_size = 10485760
-
-        # maxMessagePayloadSize given as positional arg
-        args = list(args)
-        try:
-            args[9] = max((args[9], new_max_message_payload_size))
-        except IndexError:
-            pass
-
-        # maxMessagePayloadSize given as kwarg
-        kwarg_name = "maxMessagePayloadSize"
-        if kwarg_name in kwargs and kwargs[kwarg_name] is not None:
-            kwargs[kwarg_name] = max((kwargs[kwarg_name], new_max_message_payload_size))
-
-        return original_method(*args, **kwargs)
-
-    WampWebSocketClientFactory.setProtocolOptions = set_protocol_options
+async def queue_as_aiter(q):
+    try:
+        while True:
+            item = await q.get()
+            logging.info(f"queue_as_aiter item {item}")
+            if item is None:
+                return
+            yield item
+            q.task_done()
+            print(f"sent {item}")
+    except Exception:
+        logging.exception("error in queue_as_aiter")
+        raise

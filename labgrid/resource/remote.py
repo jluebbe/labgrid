@@ -39,7 +39,7 @@ class RemotePlaceManager(ResourceManager):
         # be the same).
         if not self.session:
             self.env = remote_place.target.env
-            self.url = os.environ.get("LG_CROSSBAR", "ws://127.0.0.1:20408/ws")
+            self.url = os.environ.get("LG_CROSSBAR", "127.0.0.1:20408")
             self.realm = os.environ.get("LG_CROSSBAR_REALM", "realm1")
             if self.env:
                 config = self.env.config
