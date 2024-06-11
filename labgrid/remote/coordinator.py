@@ -847,14 +847,6 @@ class Coordinator(labgrid_coordinator_pb2_grpc.LabgridServicer):
         self.schedule_reservations()
         return res.as_pb2()
 
-    async def test_exporter_command(self):
-        logging.debug(f"testing exporter cmd")
-        for peer, exporter in self.exporters.items():
-            logging.debug(f"testing exporter cmd for '{peer}' sending")
-            event = asyncio.Event()
-            exporter.queue.put_nowait(event)
-            await event.wait()
-            logging.debug(f"testing exporter cmd for '{peer}': done")
 
 async def serve(cleanup) -> None:
     server = grpc.aio.server(
@@ -875,8 +867,6 @@ async def serve(cleanup) -> None:
     logging.debug("Starting server")
     await server.start()
     logging.debug("Coordinator ready")
-    #await asyncio.sleep(10)
-    #await coordinator.test_exporter_command()
     async def server_graceful_shutdown():
         logging.info("Starting graceful shutdown...")
         # Shuts down the server with 0 seconds of grace period. During the
