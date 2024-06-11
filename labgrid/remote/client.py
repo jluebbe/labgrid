@@ -194,9 +194,9 @@ class ClientSession:
             group[resource_name].data = resource
         print(resource)
         if self.monitor:
-            if resource and not old:
+            if 'cls' in resource and not old:
                 print(f"Resource {exporter}/{group_name}/{resource['cls']}/{resource_name} created: {resource}")
-            elif resource and old:
+            elif 'cls' in resource and old:
                 print(f"Resource {exporter}/{group_name}/{resource['cls']}/{resource_name} changed:")
                 for k, v_old, v_new in diff_dict(flat_dict(old), flat_dict(resource)):
                     print(f"  {k}: {v_old} -> {v_new}")
