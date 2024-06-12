@@ -898,7 +898,7 @@ class Exporter:
             age = time.monotonic() - self.checkpoint
             if age > 300:
                 print(f"missed checkpoint, exiting (last was {age} seconds ago)", file=sys.stderr)
-                self.disconnect()
+                #self.disconnect()
 
     async def add_resource(self, group_name, resource_name, cls, params):
         """Add a resource to the exporter and update status on the coordinator"""
