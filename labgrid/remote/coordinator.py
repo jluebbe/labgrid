@@ -922,7 +922,8 @@ def main():
     try:
         loop.run_until_complete(serve(args.listen, cleanup))
     finally:
-        loop.run_until_complete(*cleanup)
+        if cleanup:
+            loop.run_until_complete(*cleanup)
 
 if __name__ == "__main__":
     main()
