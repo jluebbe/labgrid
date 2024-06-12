@@ -763,21 +763,25 @@ class Exporter:
         resource_config = ResourceConfig(
             self.config['resources'], config_template_env
         )
-        for group_name, group in resource_config.data.items():
-            group_name = str(group_name)
-            for resource_name, params in group.items():
-                resource_name = str(resource_name)
-                if resource_name == 'location':
-                    continue
-                if params is None:
-                    continue
-                cls = params.pop('cls', resource_name)
+        import cProfile
+        with cProfile.Profile() as pr:
+            for group_name, group in resource_config.data.items():
+                group_name = str(group_name)
+                for resource_name, params in group.items():
+                    resource_name = str(resource_name)
+                    if resource_name == 'location':
+                        continue
+                    if params is None:
+                        continue
+                    cls = params.pop('cls', resource_name)
 
-                # this may call back to acquire the resource immediately
-                await self.add_resource(
-                    group_name, resource_name, cls, params
-                )
-                self.checkpoint = time.monotonic()
+                    # this may call back to acquire the resource immediately
+                    await self.add_resource(
+                        group_name, resource_name, cls, params
+                    )
+                    self.checkpoint = time.monotonic()
+            pr.print_stats()
+            pr.dump_stats('labgrid.prof')
 
         logging.info("creating poll task")
         self.poll_task = self.loop.create_task(self.poll())
