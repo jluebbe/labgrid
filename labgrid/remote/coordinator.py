@@ -118,7 +118,7 @@ class ClientSession(RemoteSession):
                     resource: ResourceImport
                     out_msg = labgrid_coordinator_pb2.ClientOutMessage()
                     out_msg.update.resource.CopyFrom(resource.as_pb2())
-                    out_msg.update.resource.path.exporter_name = self.name
+                    out_msg.update.resource.path.exporter_name = exporter.name
                     out_msg.update.resource.path.group_name = groupname
                     out_msg.update.resource.path.resource_name = resourcename
                     self.queue.put_nowait(out_msg)
