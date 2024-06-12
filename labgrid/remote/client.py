@@ -192,7 +192,6 @@ class ClientSession:
         else:
             old = group[resource_name].data
             group[resource_name].data = resource
-        print(resource)
         if self.monitor:
             if 'cls' in resource and not old:
                 print(f"Resource {exporter}/{group_name}/{resource['cls']}/{resource_name} created: {resource}")
