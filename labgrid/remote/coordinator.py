@@ -5,6 +5,7 @@ import os
 import asyncio
 import itertools
 import inspect
+import traceback
 from functools import wraps
 from enum import Enum
 import attr
@@ -217,7 +218,7 @@ class Coordinator(labgrid_coordinator_pb2_grpc.LabgridServicer):
         return labgrid_coordinator_pb2.DeletePlaceResponse()
 
     def _get_places(self):
-        return {k: v.as_pb2() for k, v in self.places.items()}
+        return {k: v.asdict() for k, v in self.places.items()}
 
     @locked
     async def GetPlaces(self, unused_request, unused_context):
